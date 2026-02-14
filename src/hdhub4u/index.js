@@ -471,10 +471,8 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         // =============================================
         
         if (searchResults.length === 0) {
-            // Cache empty result to avoid repeated failed searches (only if cache is enabled)
-            if (!DISABLE_CACHE_FOR_TESTING) {
-                await setCachedStreams(tmdbId, mediaType, season, episode, [], 600); // 10 min TTL for failures
-            }
+            // ✅ FIX #1: Never cache empty results - may be temporary failure
+            console.log("[HDHub4u] No search results - NOT caching empty result");
             return [];
         }
         
@@ -491,10 +489,8 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         });
         
         if (!bestMatch) {
-            console.log("[HDHub4u] No valid match found on site results");
-            if (!DISABLE_CACHE_FOR_TESTING) {
-                await setCachedStreams(tmdbId, mediaType, season, episode, [], 600);
-            }
+            // ✅ FIX #1: Never cache empty results - may be temporary failure
+            console.log("[HDHub4u] No valid match found - NOT caching empty result");
             return [];
         }
         
@@ -529,19 +525,32 @@ async function getStreams(tmdbId, mediaType, season, episode) {
             return (qOrder[b.quality] || 0) - (qOrder[a.quality] || 0);
         });
         
-        // ============== API CACHE SAVE ==============
+        // ✅ FIX #1: Don't cache if extraction yielded zero streams
+        if (sortedStreams.length === 0) {
+            console.log("[HDHub4u] No valid streams extracted - NOT caching empty result");
+            return [];
+        }
+        
+        // ✅ FIX #2: Async cache save (fire-and-forget - don't block response)
         if (!DISABLE_CACHE_FOR_TESTING) {
-            // Cache for 1 hour (successful results)
-            await setCachedStreams(tmdbId, mediaType, season, episode, sortedStreams, 3600);
-            
-            // Log cache statistics
-            const stats = await getCacheStats();
-            console.log(`[API-CACHE] Stats: ${stats.totalEntries || 0} entries, ${stats.totalSize || 0} total streams`);
+            // Save to cache in background without waiting
+            setCachedStreams(tmdbId, mediaType, season, episode, sortedStreams, 3600)
+                .then(() => {
+                    console.log(`[API-CACHE] ✅ Cached ${sortedStreams.length} streams in background`);
+                    return getCacheStats();
+                })
+                .then(stats => {
+                    console.log(`[API-CACHE] Stats: ${stats.totalEntries || 0} entries, ${stats.totalSize || 0} total streams`);
+                })
+                .catch(error => {
+                    console.log('[API-CACHE] Background save error (non-critical):', error.message);
+                });
         } else {
             console.log('[CACHE] ⚠️  Not saving to cache (testing mode)');
         }
-        // ============================================
         
+        // ✅ FIX #2: Return immediately - don't wait for cache
+        console.log(`[HDHub4u] ✅ Returning ${sortedStreams.length} streams to user`);
         return sortedStreams;
         
     } catch (error) {
