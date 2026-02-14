@@ -6,6 +6,8 @@ import {
     pixelDrainExtractor, 
     hubDriveExtractor, 
     hubCloudExtractor,
+    hubCdnExtractor,
+    hubstreamExtractor,
     getRedirectLinks 
 } from './extractors.js';
 import { 
@@ -147,7 +149,7 @@ async function loadExtractor(url, referer = MAIN_URL) {
     console.log("[EXTRACTOR] Processing:", url);
     
     try {
-        const hostname = new URL(url).hostname;
+        const hostname = new URL(url).hostname.toLowerCase();
         
         if (url.includes("?id=") || hostname.includes("techyboy") || hostname.includes("gdtot")) {
             const resolved = await getRedirectLinks(url);
@@ -157,8 +159,12 @@ async function loadExtractor(url, referer = MAIN_URL) {
             return [];
         }
         
-        if (hostname.includes('hubcloud') || hostname.includes('hubcdn')) {
+        if (hostname.includes('hubcloud')) {
             return await hubCloudExtractor(url, referer);
+        }
+        
+        if (hostname.includes('hubcdn')) {
+            return await hubCdnExtractor(url, referer);
         }
         
         if (hostname.includes('hubdrive')) {
@@ -167,6 +173,10 @@ async function loadExtractor(url, referer = MAIN_URL) {
         
         if (hostname.includes('pixeldrain')) {
             return await pixelDrainExtractor(url);
+        }
+        
+        if (hostname.includes('hubstream')) {
+            return await hubstreamExtractor(url, referer);
         }
         
         if (hostname.includes('hblinks')) {
