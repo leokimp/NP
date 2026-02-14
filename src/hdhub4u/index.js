@@ -522,8 +522,14 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         
         const sortedStreams = finalStreams.sort((a, b) => {
             const qOrder = { '2160p': 10, '4k': 10, '1080p': 8 };
-            return (qOrder[b.quality] || 0) - (qOrder[a.quality] || 0);
+            return (qOrder[b.name] || 0) - (qOrder[a.name] || 0);
         });
+
+
+        const numberedStreams = sortedStreams.map((stream, index) => ({
+            ...stream,
+            name: `${index + 1}. ${stream.name}` // "1. 1080p", "2. 2160p", etc.
+        }));
         
         // ✅ FIX #1: Don't cache if extraction yielded zero streams
         if (sortedStreams.length === 0) {

@@ -5,17 +5,63 @@ import { MAIN_URL, HEADERS, rot13, safeAtob, safeBtoa, extractText, extractAttr,
 import { fetchWithRetry, fetchRedirectUrl, fetchJSON, fetchText } from './http.js';
 
 // =================================================================================
+// CLOUDFLARE WORKER PROXY (for blocked domains like pixeldrain)
+// =================================================================================
+
+const PROXY_WORKER_URL = "https://proxy.leokimpese.workers.dev"; // Replace with your worker URL
+
+/**
+ * Proxy a URL through Cloudflare Worker to bypass app blocks
+ */
+function getProxiedUrl(originalUrl) {
+    return `${PROXY_WORKER_URL}?url=${encodeURIComponent(originalUrl)}`;
+}
+
+// =================================================================================
 // REDIRECT LINK DECODER
 // =================================================================================
 
 /**
- * Decode redirect links (gdtot, techyboy, etc.)
- * These use base64 + rot13 encoding
+ * Decode redirect links (gdtot, techyboy, pixel.hubcdn.fans, etc.)
+ * These use various redirect mechanisms
  */
 export async function getRedirectLinks(url) {
     console.log('[REDIRECT] Processing:', url);
     
     try {
+        // ✅ FIX #1: Handle pixel.hubcdn.fans and similar HTTP redirects
+        if (url.includes('pixel.hubcdn.fans') || url.includes('?id=')) {
+            console.log('[REDIRECT] Detected HTTP redirect link, following redirect...');
+            
+            // Try to follow the redirect using HEAD request
+            const finalUrl = await fetchRedirectUrl(url);
+            if (finalUrl && finalUrl !== url) {
+                console.log('[REDIRECT] Followed HTTP redirect to:', finalUrl);
+                return finalUrl;
+            }
+            
+            // If HEAD didn't work, try GET and look for meta refresh or JavaScript redirect
+            const html = await fetchText(url);
+            
+            // Check for meta refresh
+            const metaRefreshMatch = html.match(/<meta[^>]*http-equiv=["']refresh["'][^>]*content=["'][^"']*url=([^"']+)["']/i);
+            if (metaRefreshMatch && metaRefreshMatch[1]) {
+                console.log('[REDIRECT] Found meta refresh redirect:', metaRefreshMatch[1]);
+                return metaRefreshMatch[1];
+            }
+            
+            // Check for JavaScript redirect
+            const jsRedirectMatch = html.match(/window\.location(?:\.href)?\s*=\s*["']([^"']+)["']/i);
+            if (jsRedirectMatch && jsRedirectMatch[1]) {
+                console.log('[REDIRECT] Found JavaScript redirect:', jsRedirectMatch[1]);
+                return jsRedirectMatch[1];
+            }
+            
+            console.log('[REDIRECT] Could not extract redirect, returning original URL');
+            return url;
+        }
+        
+        // Original base64+rot13 decoding for gdtot/techyboy
         const doc = await fetchText(url);
         
         // Extract encoded data from JavaScript
@@ -69,6 +115,8 @@ export async function getRedirectLinks(url) {
 /**
  * Extract stream info from Pixeldrain
  * Example: https://pixeldrain.com/u/abc123
+ * 
+ * ✅ FIX #2: Proxy through Cloudflare Worker to bypass Nuvio app blocks
  */
 export async function pixelDrainExtractor(url) {
     console.log('[PIXELDRAIN] Extracting from:', url);
@@ -95,10 +143,17 @@ export async function pixelDrainExtractor(url) {
         const qualityMatch = info.name ? info.name.match(/(\d{3,4})p/) : null;
         const quality = qualityMatch ? qualityMatch[0] : 'Unknown';
         
+        // ✅ FIX #2: Use proxied URL to bypass Nuvio app blocks
+        const directUrl = `https://pixeldrain.com/api/file/${fileId}?download`;
+        const proxiedUrl = getProxiedUrl(directUrl);
+        
+        console.log('[PIXELDRAIN] Direct URL:', directUrl);
+        console.log('[PIXELDRAIN] Proxied URL:', proxiedUrl);
+        
         return [{
             source: 'Pixeldrain',
             quality: quality,
-            url: `https://pixeldrain.com/api/file/${fileId}?download`,
+            url: proxiedUrl, // Use proxied URL instead of direct
             size: info.size || 0,
             filename: info.name
         }];
