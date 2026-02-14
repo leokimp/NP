@@ -1,0 +1,233 @@
+export default {
+    async fetch(request, env) {
+        // CORS headers for all responses
+        const corsHeaders = {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type',
+            'Content-Type': 'application/json'
+        };
+
+        // Handle CORS preflight
+        if (request.method === 'OPTIONS') {
+            return new Response(null, {
+                status: 204,
+                headers: corsHeaders
+            });
+        }
+
+        try {
+            const url = new URL(request.url);
+            const path = url.pathname;
+
+            // GET /stats - Get cache statistics
+            if (request.method === 'GET' && path === '/stats') {
+                console.log('[Worker] Stats requested');
+                
+                try {
+                    const listResult = await env.STREAM_CACHE.list({ limit: 1000 });
+                    
+                    return new Response(JSON.stringify({
+                        totalEntries: listResult.keys.length,
+                        complete: !listResult.cursor,
+                        note: listResult.cursor ? 'More than 1000 entries exist' : 'All entries counted'
+                    }), {
+                        status: 200,
+                        headers: corsHeaders
+                    });
+                } catch (error) {
+                    return new Response(JSON.stringify({
+                        totalEntries: 'error',
+                        error: error.message
+                    }), {
+                        status: 500,
+                        headers: corsHeaders
+                    });
+                }
+            }
+
+            // GET /health - Health check
+            if (request.method === 'GET' && path === '/health') {
+                return new Response(JSON.stringify({
+                    status: 'ok',
+                    timestamp: new Date().toISOString(),
+                    service: 'HDHub4u Cache API'
+                }), {
+                    status: 200,
+                    headers: corsHeaders
+                });
+            }
+
+            // GET or POST /clearall or /clear - Clear ALL cache
+            if ((request.method === 'GET' || request.method === 'POST') && 
+                (path === '/clearall' || path === '/clear')) {
+                console.log('[Worker] Clearing all cache - STARTING');
+                
+                try {
+                    let deletedCount = 0;
+                    let cursor = null;
+                    
+                    do {
+                        const listResult = await env.STREAM_CACHE.list({
+                            cursor: cursor,
+                            limit: 1000
+                        });
+                        
+                        const deletePromises = listResult.keys.map(key => 
+                            env.STREAM_CACHE.delete(key.name)
+                        );
+                        
+                        await Promise.all(deletePromises);
+                        deletedCount += listResult.keys.length;
+                        cursor = listResult.cursor;
+                        
+                        console.log(`[Worker] Deleted ${listResult.keys.length} keys (total: ${deletedCount})`);
+                        
+                    } while (cursor);
+                    
+                    console.log(`[Worker] Cache cleared - ${deletedCount} total keys deleted`);
+                    
+                    return new Response(JSON.stringify({ 
+                        success: true,
+                        deleted: deletedCount,
+                        message: `Successfully cleared ${deletedCount} cache entries`
+                    }), {
+                        status: 200,
+                        headers: corsHeaders
+                    });
+                    
+                } catch (error) {
+                    console.error('[Worker] Clear all error:', error);
+                    
+                    return new Response(JSON.stringify({ 
+                        success: false,
+                        error: 'Failed to clear cache',
+                        message: error.message
+                    }), {
+                        status: 500,
+                        headers: corsHeaders
+                    });
+                }
+            }
+
+            // POST / - Save streams to cache
+            if (request.method === 'POST' && path === '/') {
+                const body = await request.json();
+                const { key, streams, ttl, metadata } = body;
+                
+                if (!key || !streams || !ttl) {
+                    return new Response(JSON.stringify({ 
+                        error: 'Missing required fields: key, streams, ttl' 
+                    }), {
+                        status: 400,
+                        headers: corsHeaders
+                    });
+                }
+                
+                console.log('[Worker] Saving to cache:', key, `(${streams.length} streams, TTL: ${ttl}s)`);
+                
+                const cacheData = JSON.stringify({
+                    streams,
+                    metadata: metadata || {}
+                });
+                
+                await env.STREAM_CACHE.put(key, cacheData, {
+                    expirationTtl: ttl
+                });
+                
+                console.log('[Worker] Saved successfully');
+                
+                return new Response(JSON.stringify({ 
+                    success: true,
+                    key,
+                    expiresIn: ttl
+                }), {
+                    status: 200,
+                    headers: corsHeaders
+                });
+            }
+
+            // DELETE /:key - Invalidate cache
+            if (request.method === 'DELETE' && path.length > 1) {
+                const key = path.substring(1); // Remove leading /
+                
+                console.log('[Worker] Deleting cache:', key);
+                
+                await env.STREAM_CACHE.delete(key);
+                
+                return new Response(JSON.stringify({ 
+                    success: true,
+                    deleted: true 
+                }), {
+                    status: 200,
+                    headers: corsHeaders
+                });
+            }
+
+            // GET /:key - Retrieve cached streams
+            if (request.method === 'GET' && path.length > 1 && 
+                path !== '/health' && path !== '/stats') {
+                const key = path.substring(1); // Remove leading /
+                
+                console.log('[Worker] GET request for key:', key);
+                
+                const data = await env.STREAM_CACHE.get(key);
+                
+                if (!data) {
+                    console.log('[Worker] Cache miss:', key);
+                    return new Response(JSON.stringify({ error: 'Not found' }), {
+                        status: 404,
+                        headers: corsHeaders
+                    });
+                }
+                
+                console.log('[Worker] Cache hit:', key);
+                return new Response(data, {
+                    status: 200,
+                    headers: corsHeaders
+                });
+            }
+
+            // GET / - Root endpoint info
+            if (request.method === 'GET' && path === '/') {
+                return new Response(JSON.stringify({
+                    service: 'HDHub4u Cache API',
+                    version: '2.0.0',
+                    endpoints: {
+                        'GET /:key': 'Retrieve cached streams',
+                        'POST /': 'Save streams to cache (body: {key, streams, ttl, metadata})',
+                        'DELETE /:key': 'Delete cached streams',
+                        'GET /clearall': 'Clear all cached data',
+                        'POST /clear': 'Clear all cached data',
+                        'GET /stats': 'Get cache statistics',
+                        'GET /health': 'Health check'
+                    }
+                }), {
+                    status: 200,
+                    headers: corsHeaders
+                });
+            }
+
+            // 404 - Not found
+            return new Response(JSON.stringify({ 
+                error: 'Not found',
+                path: path,
+                method: request.method
+            }), {
+                status: 404,
+                headers: corsHeaders
+            });
+
+        } catch (error) {
+            console.error('[Worker] Error:', error);
+            
+            return new Response(JSON.stringify({ 
+                error: 'Internal server error',
+                message: error.message
+            }), {
+                status: 500,
+                headers: corsHeaders
+            });
+        }
+    }
+};
