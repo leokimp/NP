@@ -522,7 +522,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         
         const sortedStreams = finalStreams.sort((a, b) => {
             const qOrder = { '2160p': 10, '4k': 10, '1080p': 8 };
-            return (qOrder[b.name] || 0) - (qOrder[a.name] || 0);
+            const aOrder = qOrder[a.name.toLowerCase()] || 0;
+            const bOrder = qOrder[b.name.toLowerCase()] || 0;
+            return bOrder - aOrder;
         });
 
 
@@ -532,7 +534,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         }));
         
         // ✅ FIX #1: Don't cache if extraction yielded zero streams
-        if (sortedStreams.length === 0) {
+        if (numberedStreams.length === 0) {
             console.log("[HDHub4u] No valid streams extracted - NOT caching empty result");
             return [];
         }
@@ -540,9 +542,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         // ✅ FIX #2: Async cache save (fire-and-forget - don't block response)
         if (!DISABLE_CACHE_FOR_TESTING) {
             // Save to cache in background without waiting
-            setCachedStreams(tmdbId, mediaType, season, episode, sortedStreams, 3600)
+            setCachedStreams(tmdbId, mediaType, season, episode, numberedStreams, 3600)
                 .then(() => {
-                    console.log(`[API-CACHE] ✅ Cached ${sortedStreams.length} streams in background`);
+                    console.log(`[API-CACHE] ✅ Cached ${numberedStreams.length} streams in background`);
                     return getCacheStats();
                 })
                 .then(stats => {
@@ -556,8 +558,8 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         }
         
         // ✅ FIX #2: Return immediately - don't wait for cache
-        console.log(`[HDHub4u] ✅ Returning ${sortedStreams.length} streams to user`);
-        return sortedStreams;
+        console.log(`[HDHub4u] ✅ Returning ${numberedStreams.length} streams to user`);
+        return numberedStreams;
         
     } catch (error) {
         console.error("[HDHub4u] Critical Error:", error);
