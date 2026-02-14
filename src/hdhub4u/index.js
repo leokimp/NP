@@ -519,12 +519,37 @@ async function getStreams(tmdbId, mediaType, season, episode) {
                 headers: HEADERS
             });
         });
+
+        function parseSizeToBytes(sizeStr) {
+            if (!sizeStr) return 0;
+            const match = sizeStr.match(/([\d.]+)\s*(GB|MB|KB|B)/i);
+            if (!match) return 0;
+
+            const value = parseFloat(match[1]);
+            const unit = match[2].toUpperCase();
+            const multipliers = {
+                'B': 1,
+                'KB': 1024,
+                'MB': 1024 * 1024,
+                'GB': 1024 * 1024 * 1024
+            };
+
+            return value * (multipliers[unit] || 0);
+
+        }
+
         
         const sortedStreams = finalStreams.sort((a, b) => {
             const qOrder = { '2160p': 10, '4k': 10, '1080p': 8 };
             const aOrder = qOrder[a.name.toLowerCase()] || 0;
             const bOrder = qOrder[b.name.toLowerCase()] || 0;
-            return bOrder - aOrder;
+
+            if (bOrder !== aOrder) {
+                return bOrder - aOrder;
+            }
+
+            return parseSizeToBytes(b.size) - parseSizeToBytes(a.size);
+
         });
 
 
