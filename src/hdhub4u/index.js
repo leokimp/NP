@@ -515,7 +515,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
                 name: res.quality,
                 title: `${displayTitle}${year ? ` (${year})` : ''} ${mediaType === 'tv' ? `S${season}E${episode}` : ''}`,
                 url: res.url,
-                size: formatBytes(res.size),
+                size: res.size,
                 headers: HEADERS
             });
         });
@@ -524,7 +524,12 @@ async function getStreams(tmdbId, mediaType, season, episode) {
             const qOrder = { '2160p': 10, '4k': 10, '1080p': 8 };
             const aOrder = qOrder[a.name.toLowerCase()] || 0;
             const bOrder = qOrder[b.name.toLowerCase()] || 0;
-            return bOrder - aOrder;
+            
+            if (bOrder !== aOrder){
+                return bOrder - aOrder;
+            }
+            
+            return b.size - a.size;
         });
 
 
