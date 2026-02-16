@@ -604,15 +604,19 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         
         const sortedStreams = finalStreams.sort((a, b) => {
             const qOrder = { '2160p': 10, '4k': 10, '1080p': 8 };
-            const aOrder = qOrder[a.name.toLowerCase()] || 0;
-            const bOrder = qOrder[b.name.toLowerCase()] || 0;
+            
+            // Clean the names by removing periods so "1080p." matches "1080p" for sorting
+            const aCleanName = a.name.toLowerCase().replace(/\./g, '').trim();
+            const bCleanName = b.name.toLowerCase().replace(/\./g, '').trim();
+            
+            const aOrder = qOrder[aCleanName] || 0;
+            const bOrder = qOrder[bCleanName] || 0;
 
             if (bOrder !== aOrder) {
                 return bOrder - aOrder;
             }
 
             return parseSizeToBytes(b.size) - parseSizeToBytes(a.size);
-
         });
 
 
