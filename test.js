@@ -61,7 +61,7 @@ async function runTest(test) {
                 console.log(`  Name: ${stream.name}`);
                 console.log(`  Title: ${stream.title}`);
                 console.log(`  Size: ${stream.size}`);
-                console.log(`  URL: ${stream.url.substring(0, 60)}...`);
+                console.log(`  URL: ${stream.url.substring(0, 1000)}`);
                 console.log('');
             });
         }

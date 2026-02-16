@@ -459,111 +459,129 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         }
 
         // ============== WebStreamr API Call ==============
-        let webstreamrResults = [];
-        if (imdbId) {
+        const webStreamrPromise = (async () => {
+            if (!imdbId) return [];
             console.log('[WebStreamr] Fetching streams for IMDb:', imdbId);
-            webstreamrResults = await webstreamrExtractor(imdbId, mediaType, season, episode);
-            console.log(`[WebStreamr] Got ${webstreamrResults.length} streams`);
-        }
+            return await webstreamrExtractor(imdbId, mediaType, season, episode);
+        })();
         
-        const searchQueue = [];
-        
-        // 2. Pivot to IMDb API for India-specific Romanized titles
-        if (imdbId) {
-            console.log("[HDHub4u] IMDb ID found:", imdbId);
-            const [imdbRes, akasRes] = await Promise.all([
-                fetch(`https://api.imdbapi.dev/titles/${imdbId}`).then(r => r.json()).catch(() => null),
-                fetch(`https://api.imdbapi.dev/titles/${imdbId}/akas`).then(r => r.json()).catch(() => ({ akas: [] }))
-            ]);
-            
-            if (imdbRes) {
-                if (imdbRes.originalTitle) searchQueue.push(imdbRes.originalTitle);
-                if (imdbRes.primaryTitle && !searchQueue.includes(imdbRes.primaryTitle)) searchQueue.push(imdbRes.primaryTitle);
-                displayTitle = imdbRes.originalTitle || imdbRes.primaryTitle;
-            }
-            
-            if (akasRes && akasRes.akas) {
-                const indianAkas = akasRes.akas
-                    .filter(aka => aka.country && aka.country.code === "IN") 
-                    .map(aka => aka.text)
-                    .filter(text => /^[a-zA-Z0-9\s\-':.!&]+$/.test(text));
+        const nativeScrapePromise = (async () => {
+            try {
+                const searchQueue = [];
+                let updatedTitle = displayTitle; // Keep track of the Romanized title
                 
-                indianAkas.forEach(aka => {
-                    if (!searchQueue.includes(aka)) searchQueue.push(aka);
-                });
-            }
-        }
-        
-        if (searchQueue.length === 0) searchQueue.push(displayTitle);
-        
-        // ============== PARALLEL SEARCH ==============
-        const { results: searchResults, usedTitle: usedTitleForMatch } = await performParallelSearch(searchQueue);
-        // =============================================
-        
-        if (searchResults.length === 0) {
-            // ✅ FIX #1: Never cache empty results - may be temporary failure
-            console.log("[HDHub4u] No search results - NOT caching empty result");
-            return [];
-        }
-        
-        // 4. Validate the Match
-        const bestMatch = searchResults.find(r => {
-            if (isTitleMatch(usedTitleForMatch, r.title)) {
-                if (mediaType === 'tv' && season) {
-                    const rLower = r.title.toLowerCase();
-                    if (!rLower.includes(`season ${season}`)) return false;
+                // 2. Pivot to IMDb API for India-specific Romanized titles
+                if (imdbId) {
+                    console.log("[HDHub4u] IMDb ID found:", imdbId);
+                    const [imdbRes, akasRes] = await Promise.all([
+                        fetch(`https://api.imdbapi.dev/titles/${imdbId}`).then(r => r.json()).catch(() => null),
+                        fetch(`https://api.imdbapi.dev/titles/${imdbId}/akas`).then(r => r.json()).catch(() => ({ akas: [] }))
+                    ]);
+                    
+                    if (imdbRes) {
+                        if (imdbRes.originalTitle) searchQueue.push(imdbRes.originalTitle);
+                        if (imdbRes.primaryTitle && !searchQueue.includes(imdbRes.primaryTitle)) searchQueue.push(imdbRes.primaryTitle);
+                        updatedTitle = imdbRes.originalTitle || imdbRes.primaryTitle;
+                    }
+                    
+                    if (akasRes && akasRes.akas) {
+                        const indianAkas = akasRes.akas
+                            .filter(aka => aka.country && aka.country.code === "IN") 
+                            .map(aka => aka.text)
+                            .filter(text => /^[a-zA-Z0-9\s\-':.!&]+$/.test(text));
+                        
+                        indianAkas.forEach(aka => {
+                            if (!searchQueue.includes(aka)) searchQueue.push(aka);
+                        });
+                    }
                 }
-                return true;
+                
+                if (searchQueue.length === 0) searchQueue.push(updatedTitle);
+                
+                // ============== PARALLEL SEARCH ==============
+                const { results: searchResults, usedTitle: usedTitleForMatch } = await performParallelSearch(searchQueue);
+                // =============================================
+                
+                if (searchResults.length === 0) {
+                    console.log("[HDHub4u] No search results - NOT caching empty result");
+                    return { nativeStreams: [], updatedTitle };
+                }
+                
+                // 4. Validate the Match
+                const bestMatch = searchResults.find(r => {
+                    if (isTitleMatch(usedTitleForMatch, r.title)) {
+                        if (mediaType === 'tv' && season) {
+                            const rLower = r.title.toLowerCase();
+                            if (!rLower.includes(`season ${season}`)) return false;
+                        }
+                        return true;
+                    }
+                    return false;
+                });
+                
+                if (!bestMatch) {
+                    console.log("[HDHub4u] No valid match found - NOT caching empty result");
+                    return { nativeStreams: [], updatedTitle };
+                }
+                
+                console.log("[HDHub4u] Found Page:", bestMatch.title);
+                const pageHtml = await fetchText(bestMatch.url);
+                
+                // 5. Extract Links
+                const linksToProcess = extractLinks(pageHtml, mediaType, season, episode);
+                console.log(`[HDHub4u] Found ${linksToProcess.length} candidate links`);
+                
+                // ============== PARALLEL EXTRACTION ==============
+                const extractedResults = await extractLinksInParallel(linksToProcess, bestMatch.url);
+                // =================================================
+                
+                // 6. Format Native Streams
+                const nativeStreams = [];
+                extractedResults.forEach(res => {
+                    if (!res || !res.url || res.quality === 'Unknown') return;
+                    if (res.quality.includes('480p') || res.quality.includes('720p')) return;
+                    
+                    const finalUrl = transformToProxyUrl(res.url);
+
+                    nativeStreams.push({
+                        name: res.quality,
+                        title: `${updatedTitle}${year ? ` (${year})` : ''} ${mediaType === 'tv' ? `S${season}E${episode}` : ''}`,
+                        url: finalUrl,
+                        size: formatBytes(res.size),
+                        headers: HEADERS
+                    });
+                });
+
+                return { nativeStreams, updatedTitle };
+            } catch (err) {
+                console.log("[HDHub4u Native Scrape Error]:", err.message);
+                return { nativeStreams: [], updatedTitle: displayTitle };
             }
-            return false;
-        });
+        })();
+
+        // ============== 🚀 WAIT FOR BOTH TO FINISH ==============
+        const [webstreamrResults, { nativeStreams, updatedTitle }] = await Promise.all([
+            webStreamrPromise.catch(() => []), // Catch WebStreamr errors so it doesn't crash everything
+            nativeScrapePromise
+        ]);
+
+        // ============== COMBINE ALL STREAMS ==============
+        const finalStreams = [...nativeStreams]; // Start with the native HDHub4u streams
+
+        // Add WebStreamr streams to the list
+        if (Array.isArray(webstreamrResults)) {
+            webstreamrResults.forEach(res => {
+                if (!res || !res.url) return;
         
-        if (!bestMatch) {
-            // ✅ FIX #1: Never cache empty results - may be temporary failure
-            console.log("[HDHub4u] No valid match found - NOT caching empty result");
-            return [];
+                finalStreams.push({
+                    name: res.quality,
+                    title: `${updatedTitle}${year ? ` (${year})` : ''} ${mediaType === 'tv' ? `S${season}E${episode}` : ''}`,
+                    url: transformToProxyUrl(res.url),
+                    size: res.sizeText || formatBytes(res.size),
+                    headers: HEADERS
+                });
+            });
         }
-        
-        console.log("[HDHub4u] Found Page:", bestMatch.title);
-        const pageHtml = await fetchText(bestMatch.url);
-        
-        // 5. Extract Links
-        const linksToProcess = extractLinks(pageHtml, mediaType, season, episode);
-        console.log(`[HDHub4u] Found ${linksToProcess.length} candidate links`);
-        
-        // ============== PARALLEL EXTRACTION ==============
-        const extractedResults = await extractLinksInParallel(linksToProcess, bestMatch.url);
-        // =================================================
-        
-        // 6. Final Stream Formatting
-        const finalStreams = [];
-        extractedResults.forEach(res => {
-            if (!res || !res.url || res.quality === 'Unknown') return;
-            if (res.quality.includes('480p') || res.quality.includes('720p')) return;
-            
-            const finalUrl = transformToProxyUrl(res.url);
-
-            finalStreams.push({
-                name: res.quality,
-                title: `${displayTitle}${year ? ` (${year})` : ''} ${mediaType === 'tv' ? `S${season}E${episode}` : ''}`,
-                url: finalUrl,
-                size: formatBytes(res.size),
-                headers: HEADERS
-            });
-        });
-
-        // ============== Add WebStreamr streams ==============
-        webstreamrResults.forEach(res => {
-            if (!res || !res.url) return;
-    
-            finalStreams.push({
-                name: res.quality,
-                title: `${displayTitle}${year ? ` (${year})` : ''} ${mediaType === 'tv' ? `S${season}E${episode}` : ''}`,
-                url: transformToProxyUrl(res.url),
-                size: res.sizeText || formatBytes(res.size),
-                headers: HEADERS
-            });
-        });
 
         function parseSizeToBytes(sizeStr) {
             if (!sizeStr) return 0;
