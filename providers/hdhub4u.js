@@ -231,7 +231,7 @@ function extractText(html) {
 }
 function extractAllLinks(html) {
   const links = [];
-  const regex = new RegExp(`<a[^>]*href=["']([^"']*)["'][^>]*>(.*?)<\\/a>`, "gis");
+  const regex = new RegExp(`<a[^>]*href=["']([^"']*)["'][^>]*>([\\s\\S]*?)<\\/a>`, "gi");
   let match;
   while ((match = regex.exec(html)) !== null) {
     links.push({
@@ -318,8 +318,12 @@ function fetchRedirectUrl(_0) {
       const response = yield fetch(url, {
         method: "HEAD",
         headers,
-        redirect: "manual"
       });
+
+      if (response.url && response.url !== url) {
+        return response.url;
+      }
+
       const location = response.headers.get("hx-redirect") || response.headers.get("location") || response.headers.get("Location");
       if (location) {
         if (location.startsWith("http")) {
@@ -588,14 +592,20 @@ function resolveRedirectChain(url, maxHops = 10) {
         const response = yield fetch(currentUrl, {
           method: "GET",
           headers: HEADERS,
-          redirect: "manual"
         });
-        const location = response.headers.get("location");
-        if (location) {
-          currentUrl = location.startsWith("http") ? location : new URL(location, currentUrl).toString();
-          hopCount++;
-          continue;
+        if (response.url && response.url !== currentUrl) {
+          console.log("[RESOLVE] React Native auto-followed to:", response.url);
+          currentUrl = response.url;
+        } else {
+          // 2. Fallback header check just in case
+          const location = response.headers.get("location") || response.headers.get("Location");
+          if (location) {
+            currentUrl = location.startsWith("http") ? location : new URL(location, currentUrl).toString();
+            hopCount++;
+            continue;
+          }
         }
+
         const contentType = response.headers.get("content-type") || "";
         if (contentType.includes("video/") || contentType.includes("application/octet-stream") || contentType.includes("application/x-matroska")) {
           console.log("[RESOLVE] Found direct file download");
@@ -813,7 +823,7 @@ function hubDriveExtractor(url, referer) {
     console.log("[HUBDRIVE] Extracting from:", url);
     try {
       const html = yield fetchText(url, { Referer: referer });
-      const hubcloudMatch = html.match(new RegExp(`<a[^>]*href=["']([^"']*hubcloud[^"']*)["'][^>]*>.*?\\[HubCloud Server\\]`, "is"));
+      const hubcloudMatch = html.match(new RegExp(`<a[^>]*href=["']([^"']*hubcloud[^"']*)["'][^>]*>[\\s\\S]*?\\[HubCloud Server\\]`, "i"));
       if (hubcloudMatch && hubcloudMatch[1]) {
         const href = hubcloudMatch[1];
         console.log("[HUBDRIVE] Found HubCloud link:", href);
@@ -959,7 +969,7 @@ function hubstreamExtractor(url, referer) {
       const html = yield fetchText(url, { Referer: referer });
       const qualityMatch = html.match(/(\d{3,4})p/);
       const quality = qualityMatch ? qualityMatch[0] : "Unknown";
-      const downloadRegex = new RegExp(`<a[^>]*href=["']([^"']*)["'][^>]*>.*?(?:Download|Server|Direct)`, "gis");
+      const downloadRegex = new RegExp(`<a[^>]*href=["']([^"']*)["'][^>]*>[\\s\\S]*?(?:Download|Server|Direct)`, "gi");
       const results = [];
       let match;
       while ((match = downloadRegex.exec(html)) !== null) {
@@ -1136,7 +1146,7 @@ function performSingleSearch(query) {
       const nativeResponse = yield fetchWithRetry(nativeUrl);
       const html = yield nativeResponse.text();
       const nativeResults = [];
-      const articleRegex = new RegExp("<article[^>]*>.*?<\\/article>", "gis");
+      const articleRegex = new RegExp("<article[^>]*>[\\s\\S]*?<\\/article>", "gi");
       const articles = html.match(articleRegex) || [];
       articles.forEach((article) => {
         const linkMatch = article.match(/<a[^>]*href=["']([^"']*)["'][^>]*>(.*?)<\/a>/i);
@@ -1296,7 +1306,7 @@ function extractLinksWithMetadata(html, mediaType, season, episode) {
     return !isBadUrl && !isBadText;
   };
   if (mediaType === "movie") {
-    const linkRegex = new RegExp(`<a[^>]*href=["']([^"']*)["'][^>]*>(.*?)<\\/a>`, "gis");
+    const linkRegex = new RegExp(`<a[^>]*href=["']([^"']*)["'][^>]*>(.*?)<\\/a>`, "gi");
     let match;
     while ((match = linkRegex.exec(html)) !== null) {
       const href = match[1];
