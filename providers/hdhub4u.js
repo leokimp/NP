@@ -1,6 +1,12 @@
+/**
+ * hdhub4u - Built from src/hdhub4u/
+ * Generated: 2026-03-02T20:33:08.617Z
+ */
 var __defProp = Object.defineProperty;
 var __defProps = Object.defineProperties;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropDescs = Object.getOwnPropertyDescriptors;
+var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getOwnPropSymbols = Object.getOwnPropertySymbols;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __propIsEnum = Object.prototype.propertyIsEnumerable;
@@ -17,6 +23,19 @@ var __spreadValues = (a, b) => {
   return a;
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var __async = (__this, __arguments, generator) => {
   return new Promise((resolve, reject) => {
     var fulfilled = (value) => {
@@ -37,60 +56,8 @@ var __async = (__this, __arguments, generator) => {
     step((generator = generator.apply(__this, __arguments)).next());
   });
 };
-var __defProp2 = Object.defineProperty;
-var __defProps2 = Object.defineProperties;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropDescs2 = Object.getOwnPropertyDescriptors;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __getOwnPropSymbols2 = Object.getOwnPropertySymbols;
-var __hasOwnProp2 = Object.prototype.hasOwnProperty;
-var __propIsEnum2 = Object.prototype.propertyIsEnumerable;
-var __defNormalProp2 = (obj, key, value) => key in obj ? __defProp2(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
-var __spreadValues2 = (a, b) => {
-  for (var prop in b || (b = {}))
-    if (__hasOwnProp2.call(b, prop))
-      __defNormalProp2(a, prop, b[prop]);
-  if (__getOwnPropSymbols2)
-    for (var prop of __getOwnPropSymbols2(b)) {
-      if (__propIsEnum2.call(b, prop))
-        __defNormalProp2(a, prop, b[prop]);
-    }
-  return a;
-};
-var __spreadProps2 = (a, b) => __defProps2(a, __getOwnPropDescs2(b));
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp2(target, name, { get: all[name], enumerable: true });
-};
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp2.call(to, key) && key !== except)
-        __defProp2(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp2({}, "__esModule", { value: true }), mod);
-var __async2 = (__this, __arguments, generator) => {
-  return new Promise((resolve, reject) => {
-    var fulfilled = (value) => {
-      try {
-        step(generator.next(value));
-      } catch (e) {
-        reject(e);
-      }
-    };
-    var rejected = (value) => {
-      try {
-        step(generator.throw(value));
-      } catch (e) {
-        reject(e);
-      }
-    };
-    var step = (x) => x.done ? resolve(x.value) : Promise.resolve(x.value).then(fulfilled, rejected);
-    step((generator = generator.apply(__this, __arguments)).next());
-  });
-};
+
+// src/hdhub4u/index.js
 var hdhub4u_exports = {};
 __export(hdhub4u_exports, {
   clearAllCache: () => clearAllCache,
@@ -98,6 +65,8 @@ __export(hdhub4u_exports, {
   getStreams: () => getStreams
 });
 module.exports = __toCommonJS(hdhub4u_exports);
+
+// src/hdhub4u/config.js
 var MAIN_URL = "https://hdhub4u.frl";
 var PINGORA_API_URL = "https://search.pingora.fyi/collections/post/documents/search";
 var DOMAINS_URL = "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json";
@@ -130,8 +99,8 @@ function transformToProxyUrl(url) {
   try {
     const proxiedUrl = `${PROXY_WORKER_URL}?l=${url}`;
     console.log("[PROXY] Transformed URL to use seeking-enabled proxy");
-    console.log("[PROXY] Original:", url.substring(0, 100) + "...");
-    console.log("[PROXY] Proxied:", proxiedUrl.substring(0, 100) + "...");
+    console.log("[PROXY] Original:", url.substring(0, 1000) + "...");
+    console.log("[PROXY] Proxied:", proxiedUrl.substring(0, 1000) + "...");
     return proxiedUrl;
   } catch (error) {
     console.log("[PROXY] Error transforming URL:", error.message);
@@ -152,66 +121,80 @@ function rot13(str) {
     (c) => String.fromCharCode((c <= "Z" ? 90 : 122) >= (c = c.charCodeAt(0) + 13) ? c : c - 26)
   );
 }
-const b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+const b64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+
 function safeAtob(input) {
-  const str = String(input).replace(/[=]+$/, "");
-  if (str.length % 4 === 1)
-    return input;
-  let output = "";
-  for (let bc = 0, bs = 0, buffer, i = 0; buffer = str.charAt(i++); ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) ? output += String.fromCharCode(255 & bs >> (-2 * bc & 6)) : 0) {
+  const str = String(input).replace(/[=]+$/, '');
+  if (str.length % 4 === 1) return input;
+  
+  let output = '';
+  for (
+    let bc = 0, bs = 0, buffer, i = 0;
+    buffer = str.charAt(i++);
+    ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) 
+      ? output += String.fromCharCode(255 & bs >> (-2 * bc & 6)) 
+      : 0
+  ) {
     buffer = b64chars.indexOf(buffer);
   }
   return output;
 }
+
 function safeBtoa(input) {
   const str = String(input);
-  let output = "";
-  for (let block = 0, charCode, i = 0, map = b64chars; str.charAt(i | 0) || (map = "=", i % 1); output += map.charAt(63 & block >> 8 - i % 1 * 8)) {
+  let output = '';
+  for (
+    let block = 0, charCode, i = 0, map = b64chars;
+    str.charAt(i | 0) || (map = '=', i % 1);
+    output += map.charAt(63 & block >> 8 - i % 1 * 8)
+  ) {
     charCode = str.charCodeAt(i += 3 / 4);
-    if (charCode > 255)
-      return input;
+    if (charCode > 0xFF) return input;
     block = block << 8 | charCode;
   }
   return output;
 }
+
+
 function seqRatio(a, b) {
-  if (!a || !b)
-    return 0;
+  if (!a || !b) return 0;
   const la = a.length, lb = b.length;
-  if (la === 0 && lb === 0)
-    return 1;
+  if (la === 0 && lb === 0) return 1;
   const dp = Array.from({ length: la + 1 }, () => new Array(lb + 1).fill(0));
   let best = 0;
   for (let i = 1; i <= la; i++)
     for (let j = 1; j <= lb; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : 0;
-      if (dp[i][j] > best)
-        best = dp[i][j];
+      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] + 1 : 0;
+      if (dp[i][j] > best) best = dp[i][j];
     }
-  return 2 * best / (la + lb);
+  return (2 * best) / (la + lb);
 }
+
 function jaccardWords(a, b) {
   const sa = new Set(a.split(/\s+/).filter(Boolean));
   const sb = new Set(b.split(/\s+/).filter(Boolean));
   let inter = 0;
-  for (const w of sa)
-    if (sb.has(w))
-      inter++;
-  const union = (/* @__PURE__ */ new Set([...sa, ...sb])).size;
+  for (const w of sa) if (sb.has(w)) inter++;
+  const union = new Set([...sa, ...sb]).size;
   return union === 0 ? 0 : inter / union;
 }
+
 function calcTitleSim(query, candidate) {
-  const norm = (s) => s.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+  const norm = s => s.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
   const q = norm(query), c = norm(candidate);
-  if (!q || !c)
-    return 0;
-  if (c.includes(q))
-    return 0.95;
+  if (!q || !c) return 0;
+  // Exact or substring check first
+  if (c.includes(q)) return 0.95;
   return Math.max(seqRatio(q, c), jaccardWords(q, c));
 }
+
+
 function isTitleMatch(query, title, threshold = 0.62) {
-  return calcTitleSim(query, title) >= threshold;
+ return calcTitleSim(query, title) >= threshold;
 }
+
+
+
 function parseSize(str) {
   const match = str.match(/([\d.]+)\s*(GB|MB|KB|TB)/i);
   if (!match)
@@ -231,7 +214,7 @@ function extractText(html) {
 }
 function extractAllLinks(html) {
   const links = [];
-  const regex = new RegExp(`<a[^>]*href=["']([^"']*)["'][^>]*>([\\s\\S]*?)<\\/a>`, "gi");
+  const regex = new RegExp(`<a[^>]*href=["']([^"']*)["'][^>]*>(.*?)<\\/a>`, "gis");
   let match;
   while ((match = regex.exec(html)) !== null) {
     links.push({
@@ -241,6 +224,8 @@ function extractAllLinks(html) {
   }
   return links;
 }
+
+// src/hdhub4u/http.js
 var domainLastUpdated = 0;
 var domainUpdateInProgress = false;
 var DOMAIN_UPDATE_INTERVAL = 36e5;
@@ -258,7 +243,7 @@ function triggerDomainUpdate() {
   });
 }
 function performDomainUpdate() {
-  return __async2(this, null, function* () {
+  return __async(this, null, function* () {
     try {
       console.log("[Domain Update] Checking for new domain (background)...");
       const response = yield fetch(DOMAINS_URL);
@@ -286,8 +271,8 @@ function initializeHeaders() {
 }
 initializeHeaders();
 function fetchWithRetry(_0) {
-  return __async2(this, arguments, function* (url, customHeaders = {}, maxRetries = 2) {
-    const headers = __spreadValues2(__spreadValues2({}, HEADERS), customHeaders);
+  return __async(this, arguments, function* (url, customHeaders = {}, maxRetries = 2) {
+    const headers = __spreadValues(__spreadValues({}, HEADERS), customHeaders);
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const response = yield fetch(url, { headers });
@@ -312,18 +297,14 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 function fetchRedirectUrl(_0) {
-  return __async2(this, arguments, function* (url, customHeaders = {}) {
+  return __async(this, arguments, function* (url, customHeaders = {}) {
     try {
-      const headers = __spreadValues2(__spreadValues2({}, HEADERS), customHeaders);
+      const headers = __spreadValues(__spreadValues({}, HEADERS), customHeaders);
       const response = yield fetch(url, {
         method: "HEAD",
         headers,
+        redirect: "manual"
       });
-
-      if (response.url && response.url !== url) {
-        return response.url;
-      }
-
       const location = response.headers.get("hx-redirect") || response.headers.get("location") || response.headers.get("Location");
       if (location) {
         if (location.startsWith("http")) {
@@ -341,7 +322,7 @@ function fetchRedirectUrl(_0) {
   });
 }
 function fetchJSON(_0) {
-  return __async2(this, arguments, function* (url, customHeaders = {}) {
+  return __async(this, arguments, function* (url, customHeaders = {}) {
     try {
       const response = yield fetchWithRetry(url, customHeaders);
       return yield response.json();
@@ -352,7 +333,7 @@ function fetchJSON(_0) {
   });
 }
 function fetchText(_0) {
-  return __async2(this, arguments, function* (url, customHeaders = {}) {
+  return __async(this, arguments, function* (url, customHeaders = {}) {
     try {
       const response = yield fetchWithRetry(url, customHeaders);
       return yield response.text();
@@ -362,6 +343,8 @@ function fetchText(_0) {
     }
   });
 }
+
+// src/hdhub4u/webstreamr.js
 var WEBSTREAMR_BASE_URL = "https://webstreamr.hayd.uk/%7B%22gu%22%3A%22on%22%2C%22hi%22%3A%22on%22%2C%22mediaFlowProxyUrl%22%3A%22%22%2C%22mediaFlowProxyPassword%22%3A%22%22%2C%22disableExtractor_doodstream%22%3A%22on%22%2C%22disableExtractor_dropload%22%3A%22on%22%2C%22disableExtractor_fastream%22%3A%22on%22%2C%22disableExtractor_kinoger%22%3A%22on%22%2C%22disableExtractor_lulustream%22%3A%22on%22%2C%22disableExtractor_mixdrop%22%3A%22on%22%2C%22disableExtractor_savefiles%22%3A%22on%22%2C%22disableExtractor_streamembed%22%3A%22on%22%2C%22disableExtractor_streamtape%22%3A%22on%22%2C%22disableExtractor_streamup%22%3A%22on%22%2C%22disableExtractor_supervideo%22%3A%22on%22%2C%22disableExtractor_uqload%22%3A%22on%22%2C%22disableExtractor_vidora%22%3A%22on%22%2C%22disableExtractor_vidsrc%22%3A%22on%22%2C%22disableExtractor_vixsrc%22%3A%22on%22%2C%22disableExtractor_voe%22%3A%22on%22%2C%22disableExtractor_youtube%22%3A%22on%22%7D";
 var ALLOWED_LANGUAGES = ["hindi", "gujarati", "english"];
 var BLOCKED_LANGUAGES = [
@@ -471,7 +454,7 @@ function cleanStreamMetadata(streams) {
     const cleanTitleLine = `${movieName}  ${year}  ${lang}`.replace(/\s+/g, " ").trim();
     const sizeMatch = title.match(/(\d+(?:\.\d+)?\s*[GM]B)/i);
     const cleanSize = sizeMatch ? sizeMatch[1] : "";
-    return __spreadProps2(__spreadValues2({}, stream), {
+    return __spreadProps(__spreadValues({}, stream), {
       name: cleanName,
       title: cleanTitleLine.trim(),
       size: cleanSize
@@ -479,7 +462,7 @@ function cleanStreamMetadata(streams) {
   });
 }
 function webstreamrExtractor(imdbId, mediaType, season, episode) {
-  return __async2(this, null, function* () {
+  return __async(this, null, function* () {
     console.log("[WEBSTREAMR] Starting extraction:", { imdbId, mediaType, season, episode });
     if (!imdbId) {
       console.log("[WEBSTREAMR] No IMDb ID provided");
@@ -530,6 +513,8 @@ function webstreamrExtractor(imdbId, mediaType, season, episode) {
     }
   });
 }
+
+// src/hdhub4u/extractors.js
 function isDirectLink(url) {
   const directPatterns = [
     /^https?:\/\/pixeldrain\.com\/api\/file\/.*\?download/i,
@@ -555,8 +540,8 @@ function isRedirectLink(url) {
   return redirectPatterns.some((pattern) => pattern.test(url));
 }
 function resolveRedirectChain(url, maxHops = 10) {
-  return __async2(this, null, function* () {
-    console.log("[RESOLVE] Starting redirect resolution for:", url.substring(0, 80) + "...");
+  return __async(this, null, function* () {
+    console.log("[RESOLVE] Starting redirect resolution for:", url);
     let currentUrl = url;
     let hopCount = 0;
     const adDomains = [
@@ -569,7 +554,13 @@ function resolveRedirectChain(url, maxHops = 10) {
       "blogspot.com"
     ];
     while (hopCount < maxHops) {
-      console.log(`[RESOLVE] Hop ${hopCount + 1}:`, currentUrl.substring(0, 80) + "...");
+      console.log(`[RESOLVE] Hop ${hopCount + 1}:`, currentUrl);
+      if (currentUrl.includes("pixel.hubcdn.fans")) {
+        console.log("[RESOLVE] Swapping pixel.hubcdn.fans → gpdl.hubcdn.fans");
+        currentUrl = currentUrl.replace("pixel.hubcdn.fans", "gpdl.hubcdn.fans");
+        console.log("[RESOLVE] Swapped URL:", currentUrl);
+      }
+
       if (currentUrl.includes("dl.php?link=")) {
         try {
           const urlObj = new URL(currentUrl);
@@ -592,20 +583,14 @@ function resolveRedirectChain(url, maxHops = 10) {
         const response = yield fetch(currentUrl, {
           method: "GET",
           headers: HEADERS,
+          redirect: "manual"
         });
-        if (response.url && response.url !== currentUrl) {
-          console.log("[RESOLVE] React Native auto-followed to:", response.url);
-          currentUrl = response.url;
-        } else {
-          // 2. Fallback header check just in case
-          const location = response.headers.get("location") || response.headers.get("Location");
-          if (location) {
-            currentUrl = location.startsWith("http") ? location : new URL(location, currentUrl).toString();
-            hopCount++;
-            continue;
-          }
+        const location = response.headers.get("location");
+        if (location) {
+          currentUrl = location.startsWith("http") ? location : new URL(location, currentUrl).toString();
+          hopCount++;
+          continue;
         }
-
         const contentType = response.headers.get("content-type") || "";
         if (contentType.includes("video/") || contentType.includes("application/octet-stream") || contentType.includes("application/x-matroska")) {
           console.log("[RESOLVE] Found direct file download");
@@ -742,7 +727,7 @@ function resolveRedirectChain(url, maxHops = 10) {
   });
 }
 function getRedirectLinks(url) {
-  return __async2(this, null, function* () {
+  return __async(this, null, function* () {
     console.log("[REDIRECT] Processing:", url);
     try {
       const doc = yield fetchText(url);
@@ -788,7 +773,7 @@ function getRedirectLinks(url) {
   });
 }
 function pixelDrainExtractor(url) {
-  return __async2(this, null, function* () {
+  return __async(this, null, function* () {
     console.log("[PIXELDRAIN] Extracting from:", url);
     const match = url.match(/(?:file|u)\/([A-Za-z0-9]+)/);
     const fileId = match ? match[1] : url.split("/").pop();
@@ -819,11 +804,11 @@ function pixelDrainExtractor(url) {
   });
 }
 function hubDriveExtractor(url, referer) {
-  return __async2(this, null, function* () {
+  return __async(this, null, function* () {
     console.log("[HUBDRIVE] Extracting from:", url);
     try {
       const html = yield fetchText(url, { Referer: referer });
-      const hubcloudMatch = html.match(new RegExp(`<a[^>]*href=["']([^"']*hubcloud[^"']*)["'][^>]*>[\\s\\S]*?\\[HubCloud Server\\]`, "i"));
+      const hubcloudMatch = html.match(new RegExp(`<a[^>]*href=["']([^"']*hubcloud[^"']*)["'][^>]*>.*?\\[HubCloud Server\\]`, "is"));
       if (hubcloudMatch && hubcloudMatch[1]) {
         const href = hubcloudMatch[1];
         console.log("[HUBDRIVE] Found HubCloud link:", href);
@@ -838,7 +823,7 @@ function hubDriveExtractor(url, referer) {
   });
 }
 function hubCloudExtractor(url, referer) {
-  return __async2(this, null, function* () {
+  return __async(this, null, function* () {
     console.log("[HUBCLOUD] Extracting from:", url);
     let currentUrl = url;
     if (currentUrl.includes("hubcloud.ink")) {
@@ -873,9 +858,9 @@ function hubCloudExtractor(url, referer) {
         }
         const sourceBase = `HubCloud [${text}]`;
         if (isRedirectLink(href)) {
-          console.log("[HUBCLOUD] Resolving redirect link:", href.substring(0, 60) + "...");
+          console.log("[HUBCLOUD] Resolving redirect link:", href);
           href = yield resolveRedirectChain(href);
-          console.log("[HUBCLOUD] Resolved to:", href.substring(0, 60) + "...");
+          console.log("[HUBCLOUD] Resolved to:", href);
         }
         if (text.includes("Download File") || text.includes("FSL") || text.includes("S3") || text.includes("10Gbps")) {
           console.log("[HUBCLOUD] Direct server:", text);
@@ -921,7 +906,7 @@ function hubCloudExtractor(url, referer) {
   });
 }
 function hubCdnExtractor(url, referer) {
-  return __async2(this, null, function* () {
+  return __async(this, null, function* () {
     console.log("[HUBCDN] Extracting from:", url);
     try {
       const html = yield fetchText(url, { Referer: referer });
@@ -944,7 +929,7 @@ function hubCdnExtractor(url, referer) {
           if (isRedirectLink(href)) {
             console.log("[HUBCDN] Resolving redirect...");
             href = yield resolveRedirectChain(href);
-            console.log("[HUBCDN] Resolved to:", href.substring(0, 60) + "...");
+            console.log("[HUBCDN] Resolved to:", href);
           }
           results.push({
             source: "HubCdn",
@@ -963,13 +948,13 @@ function hubCdnExtractor(url, referer) {
   });
 }
 function hubstreamExtractor(url, referer) {
-  return __async2(this, null, function* () {
+  return __async(this, null, function* () {
     console.log("[HUBSTREAM] Extracting from:", url);
     try {
       const html = yield fetchText(url, { Referer: referer });
       const qualityMatch = html.match(/(\d{3,4})p/);
       const quality = qualityMatch ? qualityMatch[0] : "Unknown";
-      const downloadRegex = new RegExp(`<a[^>]*href=["']([^"']*)["'][^>]*>[\\s\\S]*?(?:Download|Server|Direct)`, "gi");
+      const downloadRegex = new RegExp(`<a[^>]*href=["']([^"']*)["'][^>]*>.*?(?:Download|Server|Direct)`, "gis");
       const results = [];
       let match;
       while ((match = downloadRegex.exec(html)) !== null) {
@@ -979,7 +964,7 @@ function hubstreamExtractor(url, referer) {
           if (isRedirectLink(href)) {
             console.log("[HUBSTREAM] Resolving redirect...");
             href = yield resolveRedirectChain(href);
-            console.log("[HUBSTREAM] Resolved to:", href.substring(0, 60) + "...");
+            console.log("[HUBSTREAM] Resolved to:", href);
           }
           results.push({
             source: "Hubstream",
@@ -997,13 +982,15 @@ function hubstreamExtractor(url, referer) {
     }
   });
 }
+
+// src/hdhub4u/api-cache.js
 var CACHE_API_BASE = "https://cache.leokimpese.workers.dev";
 var DEFAULT_TTL = 3600;
 function generateCacheKey(tmdbId, mediaType, season, episode) {
   return `${tmdbId}_${mediaType}_${season || "null"}_${episode || "null"}`;
 }
 function getCachedStreams(tmdbId, mediaType, season, episode) {
-  return __async2(this, null, function* () {
+  return __async(this, null, function* () {
     const key = generateCacheKey(tmdbId, mediaType, season, episode);
     try {
       console.log("[API-CACHE] Fetching:", key);
@@ -1036,7 +1023,7 @@ function getCachedStreams(tmdbId, mediaType, season, episode) {
   });
 }
 function setCachedStreams(_0, _1, _2, _3, _4) {
-  return __async2(this, arguments, function* (tmdbId, mediaType, season, episode, streams, ttl = DEFAULT_TTL) {
+  return __async(this, arguments, function* (tmdbId, mediaType, season, episode, streams, ttl = DEFAULT_TTL) {
     const key = generateCacheKey(tmdbId, mediaType, season, episode);
     try {
       console.log(`[API-CACHE] Saving: ${key} (${streams.length} streams, TTL: ${ttl}s)`);
@@ -1072,7 +1059,7 @@ function setCachedStreams(_0, _1, _2, _3, _4) {
   });
 }
 function clearAllCache() {
-  return __async2(this, null, function* () {
+  return __async(this, null, function* () {
     try {
       console.log("[API-CACHE] Clearing all cache...");
       const response = yield fetch(`${CACHE_API_BASE}/clearall`, {
@@ -1092,7 +1079,7 @@ function clearAllCache() {
   });
 }
 function getCacheStats() {
-  return __async2(this, null, function* () {
+  return __async(this, null, function* () {
     try {
       const response = yield fetch(`${CACHE_API_BASE}/stats`, {
         // ✅ Changed from /v1/cache/stats
@@ -1117,9 +1104,11 @@ function getCacheStats() {
     }
   });
 }
+
+// src/hdhub4u/index.js
 var DISABLE_CACHE_FOR_TESTING = false;
 function performSingleSearch(query) {
-  return __async2(this, null, function* () {
+  return __async(this, null, function* () {
     const cleanQuery = query.replace(/Season \d+/i, "").trim();
     const params = new URLSearchParams({
       q: cleanQuery,
@@ -1146,7 +1135,7 @@ function performSingleSearch(query) {
       const nativeResponse = yield fetchWithRetry(nativeUrl);
       const html = yield nativeResponse.text();
       const nativeResults = [];
-      const articleRegex = new RegExp("<article[^>]*>[\\s\\S]*?<\\/article>", "gi");
+      const articleRegex = new RegExp("<article[^>]*>.*?<\\/article>", "gis");
       const articles = html.match(articleRegex) || [];
       articles.forEach((article) => {
         const linkMatch = article.match(/<a[^>]*href=["']([^"']*)["'][^>]*>(.*?)<\/a>/i);
@@ -1170,46 +1159,48 @@ function performSingleSearch(query) {
     }
   });
 }
-function performParallelSearch(queries, year) {
-  return __async(this, null, function* () {
-    const allResults = yield Promise.all(queries.map((q) => performSingleSearch(q)));
-    const scored = [];
-    for (let i = 0; i < allResults.length; i++) {
-      for (const r of allResults[i]) {
-        const titleScore = calcTitleSim(queries[i], r.title);
-        if (titleScore < 0.62)
-          continue;
-        let rankScore = titleScore;
-        if (year) {
-          const rYear = (r.title.match(/\b(19|20)\d{2}\b/) || [])[0];
-          if (rYear) {
-            const delta = Math.abs(parseInt(year) - parseInt(rYear));
-            if (delta === 0)
-              rankScore = Math.min(1, rankScore + 0.1);
-            else if (delta > 3)
-              rankScore *= 0.7;
-          }
+async function performParallelSearch(queries, year) {
+  const allResults = await Promise.all(queries.map(q => performSingleSearch(q)));
+
+  const scored = [];
+
+  for (let i = 0; i < allResults.length; i++) {
+    for (const r of allResults[i]) {
+      const titleScore = calcTitleSim(queries[i], r.title);
+      if (titleScore < 0.62) continue; // pre-filter noise
+
+      let rankScore = titleScore;
+      if (year) {
+        const rYear = (r.title.match(/\b(19|20)\d{2}\b/) || [])[0];
+        if (rYear) {
+          const delta = Math.abs(parseInt(year) - parseInt(rYear));
+          if (delta === 0) rankScore = Math.min(1, rankScore + 0.1);
+          else if (delta > 3) rankScore *= 0.7;
         }
-        if (rankScore < 0.62)
-          continue;
-        scored.push(__spreadProps(__spreadValues({}, r), { titleScore, rankScore, usedQuery: queries[i] }));
       }
+
+      // re-filter after year penalty (could drop below 0.62)
+      if (rankScore < 0.62) continue;
+
+      scored.push({ ...r, titleScore, rankScore, usedQuery: queries[i] });
     }
-    if (!scored.length)
-      return { results: [], usedTitle: "" };
-    scored.sort((a, b) => b.rankScore - a.rankScore);
-    const seen = /* @__PURE__ */ new Set();
-    const unique = scored.filter((r) => {
-      if (seen.has(r.url))
-        return false;
-      seen.add(r.url);
-      return true;
-    });
-    return { results: unique, usedTitle: unique[0].usedQuery };
+  }
+
+  if (!scored.length) return { results: [], usedTitle: "" };
+
+  // Sort best-first, deduplicate by URL
+  scored.sort((a, b) => b.rankScore - a.rankScore);
+  const seen = new Set();
+  const unique = scored.filter(r => {
+    if (seen.has(r.url)) return false;
+    seen.add(r.url);
+    return true;
   });
+
+  return { results: unique, usedTitle: unique[0].usedQuery };
 }
 function loadExtractor(_0) {
-  return __async2(this, arguments, function* (url, referer = MAIN_URL) {
+  return __async(this, arguments, function* (url, referer = MAIN_URL) {
     if (!url) {
       console.log("[EXTRACTOR] Empty URL");
       return [];
@@ -1268,7 +1259,7 @@ function loadExtractor(_0) {
   });
 }
 function extractLinksInParallel(links, referer) {
-  return __async2(this, null, function* () {
+  return __async(this, null, function* () {
     console.log(`[Parallel Extraction] Processing ${links.length} links simultaneously...`);
     const startTime = Date.now();
     const extractionPromises = links.map(
@@ -1306,7 +1297,7 @@ function extractLinksWithMetadata(html, mediaType, season, episode) {
     return !isBadUrl && !isBadText;
   };
   if (mediaType === "movie") {
-    const linkRegex = new RegExp(`<a[^>]*href=["']([^"']*)["'][^>]*>(.*?)<\\/a>`, "gi");
+    const linkRegex = new RegExp(`<a[^>]*href=["']([^"']*)["'][^>]*>(.*?)<\\/a>`, "gis");
     let match;
     while ((match = linkRegex.exec(html)) !== null) {
       const href = match[1];
@@ -1363,7 +1354,7 @@ function extractLinksWithMetadata(html, mediaType, season, episode) {
             const href = linkMatch[1];
             const rawText = linkMatch[2];
             if (isValidStreamLink(href, rawText)) {
-              console.log(`[TV]   \u2192 Found valid link: ${href.substring(0, 60)}...`);
+              console.log(`[TV]   \u2192 Found valid link: ${href}`);
               foundLinks++;
               linksWithMetadata.push({
                 url: href,
@@ -1409,7 +1400,7 @@ function extractLinks(html, mediaType, season, episode) {
   return linksWithMetadata.map((meta) => meta.url);
 }
 function getStreams(tmdbId, mediaType, season, episode) {
-  return __async2(this, null, function* () {
+  return __async(this, null, function* () {
     console.log("[HDHub4u] Starting:", tmdbId, mediaType, season, episode);
     if (!DISABLE_CACHE_FOR_TESTING) {
       try {
@@ -1453,13 +1444,13 @@ function getStreams(tmdbId, mediaType, season, episode) {
       } else if (mediaType === "tv" && tmdbInfo.first_air_date) {
         year = tmdbInfo.first_air_date.split("-")[0];
       }
-      const webStreamrPromise = (() => __async2(this, null, function* () {
+      const webStreamrPromise = (() => __async(this, null, function* () {
         if (!imdbId)
           return [];
         console.log("[WebStreamr] Fetching streams for IMDb:", imdbId);
         return yield webstreamrExtractor(imdbId, mediaType, season, episode);
       }))();
-      const nativeScrapePromise = (() => __async2(this, null, function* () {
+      const nativeScrapePromise = (() => __async(this, null, function* () {
         try {
           const searchQueue = [];
           let updatedTitle2 = displayTitle;
@@ -1477,7 +1468,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
               updatedTitle2 = imdbRes.originalTitle || imdbRes.primaryTitle;
             }
             if (akasRes && akasRes.akas) {
-              const indianAkas = akasRes.akas.filter((aka) => aka.country && aka.country.code === "IN").map((aka) => aka.text).filter((text) => /^[\w\s\-':.!&–—(),]+$/.test(text));
+              const indianAkas = akasRes.akas.filter((aka) => aka.country && aka.country.code === "IN").map((aka) => aka.text).filter(text => /^[\w\s\-':.!&–—(),]+$/.test(text));
               indianAkas.forEach((aka) => {
                 if (!searchQueue.includes(aka))
                   searchQueue.push(aka);
@@ -1557,7 +1548,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
         }
         return parseSizeToBytes(b.size) - parseSizeToBytes(a.size);
       });
-      const numberedStreams = sortedStreams.map((stream, index) => __spreadProps2(__spreadValues2({}, stream), {
+      const numberedStreams = sortedStreams.map((stream, index) => __spreadProps(__spreadValues({}, stream), {
         name: `${index + 1}. ${stream.name}`
         // "1. 1080p", "2. 2160p", etc.
       }));
