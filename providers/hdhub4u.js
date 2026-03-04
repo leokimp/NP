@@ -103,21 +103,22 @@ function shouldPixeldrainUrl(url) {
   return pixeldrainPatterns.some((pattern) => url.includes(pattern));
 }
 function transformToProxyUrl(url) {
-  if (!shouldProxyUrl(url)) {
-    return url;
+  // Google Drive branch
+  if (shouldProxyUrl(url)) {
+    try {
+      const proxiedUrl = `${PROXY_WORKER_URL}?l=${url}`;
+      console.log("[PROXY] Transformed URL to use seeking-enabled proxy");
+      console.log("[PROXY] Original:", url.substring(0, 1000) + "...");
+      console.log("[PROXY] Proxied:", proxiedUrl.substring(0, 1000) + "...");
+      return proxiedUrl;
+    } catch (error) {
+      console.log("[PROXY] Error transforming URL:", error.message);
+      return url;
+    }
   }
-  try {
-    const proxiedUrl = `${PROXY_WORKER_URL}?l=${url}`;
-    console.log("[PROXY] Transformed URL to use seeking-enabled proxy");
-    console.log("[PROXY] Original:", url.substring(0, 1000) + "...");
-    console.log("[PROXY] Proxied:", proxiedUrl.substring(0, 1000) + "...");
-    return proxiedUrl;
-  } catch (error) {
-    console.log("[PROXY] Error transforming URL:", error.message);
-    return url;
-  }
-}
-if (shouldPixeldrainUrl(url)) {
+
+  // Pixeldrain branch
+  if (shouldPixeldrainUrl(url)) {
     try {
       const proxiedUrl = `${PIXELDRAIN_PROXY_URL}?url=${encodeURIComponent(url)}`;
       console.log("[PROXY] Transformed Pixeldrain URL to use seeking-enabled Deno proxy");
