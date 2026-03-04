@@ -73,7 +73,7 @@ var DOMAINS_URL = "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/
 var PROXY_WORKER_URL = "https://stream.leokimpese.workers.dev/";
 var ENABLE_GOOGLE_DRIVE_PROXY = true;
 var PIXELDRAIN_PROXY_URL = "https://brave-hedgehog-25.leokimp.deno.net";
-var ENABLE_PIXELDRAIN_PROXY = true;
+var ENABLE_PIXELDRAIN_PROXY = false;
 var HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
