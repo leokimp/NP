@@ -72,6 +72,8 @@ var PINGORA_API_URL = "https://search.pingora.fyi/collections/post/documents/sea
 var DOMAINS_URL = "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json";
 var PROXY_WORKER_URL = "https://stream.leokimpese.workers.dev/";
 var ENABLE_GOOGLE_DRIVE_PROXY = true;
+var PIXELDRAIN_PROXY_URL = "https://brave-hedgehog-25.leokimp.deno.net";
+var ENABLE_PIXELDRAIN_PROXY = true;
 var HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -92,6 +94,14 @@ function shouldProxyUrl(url) {
   ];
   return proxyPatterns.some((pattern) => url.includes(pattern));
 }
+function shouldPixeldrainUrl(url) {
+  if (!ENABLE_PIXELDRAIN_PROXY || !url) return false;
+  const pixeldrainPatterns = [
+    "pixeldrain.com/api/file/",
+    "pixeldrain.dev/api/file/"
+  ];
+  return pixeldrainPatterns.some((pattern) => url.includes(pattern));
+}
 function transformToProxyUrl(url) {
   if (!shouldProxyUrl(url)) {
     return url;
@@ -106,6 +116,21 @@ function transformToProxyUrl(url) {
     console.log("[PROXY] Error transforming URL:", error.message);
     return url;
   }
+}
+if (shouldPixeldrainUrl(url)) {
+    try {
+      const proxiedUrl = `${PIXELDRAIN_PROXY_URL}?url=${encodeURIComponent(url)}`;
+      console.log("[PROXY] Transformed Pixeldrain URL to use seeking-enabled Deno proxy");
+      console.log("[PROXY] Original:", url);
+      console.log("[PROXY] Proxied:", proxiedUrl);
+      return proxiedUrl;
+    } catch (error) {
+      console.log("[PROXY] Error transforming Pixeldrain URL:", error.message);
+      return url;
+    }
+  }
+
+  return url;
 }
 function formatBytes(bytes) {
   if (!bytes || bytes === 0)
@@ -518,6 +543,7 @@ function webstreamrExtractor(imdbId, mediaType, season, episode) {
 function isDirectLink(url) {
   const directPatterns = [
     /^https?:\/\/pixeldrain\.com\/api\/file\/.*\?download/i,
+    /^https?:\/\/pixeldrain\.dev\/api\/file\//i,
     /^https?:\/\/([a-z0-9-]+\.)*video-downloads\.googleusercontent\.com/i,
     /^https?:\/\/drive\.google\.com\/uc\?/i,
     /^https?:\/\/docs\.google\.com.*export/i
@@ -627,7 +653,7 @@ function resolveRedirectChain(url, maxHops = 10) {
             console.log("[RESOLVE] Found download button, extracting URL from JS...");
             const urlPatterns = [
               /https?:\/\/video-downloads\.googleusercontent\.com\/[^\s"'<>)]+/,
-              /https?:\/\/[^\s"'<>]+pixeldrain\.com[^\s"'<>]+/,
+              /https?:\/\/[^\s"'<>]+pixeldrain\.(com|dev)[^\s"'<>]+/,
               /https?:\/\/drive\.google\.com[^\s"'<>]+/,
               /var\s+(?:download_?url|file_?url|link)\s*=\s*["']([^"']+)["']/i,
               /location\.href\s*=\s*["']([^"']+)["']/i,
@@ -649,6 +675,7 @@ function resolveRedirectChain(url, maxHops = 10) {
           const directUrlPatterns = [
             /https?:\/\/video-downloads\.googleusercontent\.com\/[^\s"'<>)]+/,
             /https?:\/\/pixeldrain\.com\/api\/file\/[^\s"'<>]+/,
+            /https?:\/\/pixeldrain\.dev\/api\/file\/[^\s"'<>]+/,
             /https?:\/\/drive\.google\.com\/uc\?[^\s"'<>]+/
           ];
           for (const pattern of directUrlPatterns) {
