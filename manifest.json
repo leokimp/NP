@@ -1,120 +1,31 @@
 {
-  "id": "community.tmdb.discover.plus",
-  "name": "TMDB Discover+",
-  "description": "Create custom movie and TV catalogs with powerful TMDB filters",
-  "version": "2.8.0",
-  "logo": "https://tmdb-discover-plus.elfhosted.com/logo.png",
-  "idPrefixes": [
-    "tmdb:",
-    "tt"
-  ],
-  "resources": [
-    "catalog",
-    "meta"
-  ],
-  "types": [
-    "movie",
-    "series"
-  ],
-  "catalogs": [
+  "name": "Jim",
+  "version": "1.0.0",
+  "scrapers": [
     {
-      "id": "tmdb-aa40d6c4-e193-4421-b9b8-658c5217e3fa",
-      "type": "movie",
-      "name": "Comedy Movies",
-      "pageSize": 20,
-      "extra": [
-        {
-          "name": "skip"
-        },
-        {
-          "name": "genre",
-          "options": [
-            "All",
-            "Action",
-            "Adventure",
-            "Animation",
-            "Comedy",
-            "Crime",
-            "Documentary",
-            "Drama",
-            "Family",
-            "Fantasy",
-            "History",
-            "Horror",
-            "Music",
-            "Mystery",
-            "Romance",
-            "Science Fiction",
-            "Thriller",
-            "TV Movie",
-            "War",
-            "Western"
-          ],
-          "optionsLimit": 1,
-          "isRequired": false
-        }
-      ]
-    },
-    {
-      "id": "tmdb-search-movie",
-      "type": "movie",
-      "name": "TMDB Search",
-      "extra": [
-        {
-          "name": "search",
-          "isRequired": true
-        },
-        {
-          "name": "skip"
-        }
-      ]
-    },
-    {
-      "id": "tmdb-search-series",
-      "type": "series",
-      "name": "TMDB Search",
-      "extra": [
-        {
-          "name": "search",
-          "isRequired": true
-        },
-        {
-          "name": "skip"
-        }
-      ]
-    },
-    {
-      "id": "imdb-search-movie",
-      "type": "movie",
-      "name": "IMDb Search",
-      "extra": [
-        {
-          "name": "search",
-          "isRequired": true
-        },
-        {
-          "name": "skip"
-        }
-      ]
-    },
-    {
-      "id": "imdb-search-series",
-      "type": "series",
-      "name": "IMDb Search",
-      "extra": [
-        {
-          "name": "search",
-          "isRequired": true
-        },
-        {
-          "name": "skip"
-        }
-      ]
+      "id": "hdhub4u",
+      "name": "HD Server",
+      "description": "",
+      "version": "1.1.1",
+      "author": "Jim",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/hdhub4u.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ], 
+      "limited": false,
+      "disabledPlatforms": [],
+      "supportsExternalPlayer": true
     }
-  ],
-  "behaviorHints": {
-    "configurable": true,
-    "configurationRequired": false,
-    "newEpisodeNotifications": true
-  }
+  ]
 }
