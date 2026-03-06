@@ -1200,6 +1200,7 @@ function performSingleSearch(query) {
   });
 }
 function performParallelSearch(queries, year) {
+  console.log("[Search] Queue:", queries);
   return __async(this, null, function* () {
     const allResults = yield Promise.all(queries.map((q) => performSingleSearch(q)));
     const scored = [];
