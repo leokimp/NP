@@ -1161,6 +1161,9 @@ function performSingleSearch(query) {
       console.log(`[Search] Pingora hits for "${query}":`, data.hits?.length ?? 0);
       const results = [];
       if (data.hits && data.hits.length > 0) {
+        console.log(`[Search] Pingora titles for "${query}":`,
+          data.hits.map(h => h.document.post_title)
+        );
         data.hits.forEach((hit) => {
           results.push({
             title: hit.document.post_title,
