@@ -1158,6 +1158,7 @@ function performSingleSearch(query) {
     try {
       const response = yield fetchWithRetry(`${PINGORA_API_URL}?${params.toString()}`);
       const data = yield response.json();
+      console.log(`[Search] Pingora hits for "${query}":`, data.hits?.length ?? 0);
       const results = [];
       if (data.hits && data.hits.length > 0) {
         data.hits.forEach((hit) => {
@@ -1170,13 +1171,14 @@ function performSingleSearch(query) {
         });
         return results;
       }
-      console.log(`[Search] "${query}" - Pingora returned 0 results, trying Native Search`);
+      console.log(`[Search] Trying native search for "${cleanQuery}"`);
       const nativeUrl = `${MAIN_URL}/?s=${encodeURIComponent(cleanQuery)}`;
       const nativeResponse = yield fetchWithRetry(nativeUrl);
       const html = yield nativeResponse.text();
       const nativeResults = [];
       const articleRegex = new RegExp("<article[^>]*>.*?<\\/article>", "gis");
       const articles = html.match(articleRegex) || [];
+      console.log(`[Search] Native articles found for "${cleanQuery}":`, articles.length);
       articles.forEach((article) => {
         const linkMatch = article.match(/<a[^>]*href=["']([^"']*)["'][^>]*>(.*?)<\/a>/i);
         if (linkMatch) {
