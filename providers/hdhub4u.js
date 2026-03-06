@@ -201,7 +201,7 @@ function jaccardWords(a, b) {
   return union === 0 ? 0 : inter / union;
 }
 function calcTitleSim(query, candidate) {
-  const norm = (s) => s.toLowerCase().replace(/\s*&\s*/g, " and ").replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+  const norm = (s) => s.replace(/&amp;/gi, "&").toLowerCase().replace(/\s*&\s*/g, " and ").replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
   const q = norm(query), c = norm(candidate);
   if (!q || !c)
     return 0;
