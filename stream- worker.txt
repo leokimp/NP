@@ -1,0 +1,601 @@
+addEventListener('fetch', event => {
+  event.respondWith(handleRequest(event.request));
+});
+
+// ===========================================
+// CONFIGURATION - 7G1
+// ===========================================
+const CONFIG = {
+  clientId: '2778381539-q2g3t84m02i23rob9a0ao0qgla12n2th.apps.googleusercontent.com',
+  clientSecret: 'OCSPX--xX6X-Gh259TIiJxBil4tXG47ZXG',
+  refreshToken: '//05jPOPozj46O3CgYIARAAGAUSNwF-L9Irw1cppNbOjyCzJ-MVH5qL6oh1OeOaeiav5LKip6ccv6N4xR-F1j_ET3B3TMCXLjHrC1o',
+
+  // Advanced Settings
+  maxRetries: 3,
+  retryDelay: 1000,
+  rateLimitPerMinute: 100,
+  enableCloudflareCache: true,
+};
+
+// ===========================================
+// GLOBAL CACHES
+// ===========================================
+let tokenCache = { token: null, expires: 0 };
+const metaCache = new Map();
+const rateLimitMap = new Map();
+
+// ===========================================
+// MAIN REQUEST HANDLER
+// ===========================================
+async function handleRequest(request) {
+  // 1. CORS Preflight
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: getCorsHeaders(),
+    });
+  }
+
+  const url = new URL(request.url);
+
+  // 2. Route: /decrypt — Crypto for Hermes/React Native (no Web Crypto API in Hermes)
+  if (url.pathname === '/decrypt') {
+    return handleDecrypt(request);
+  }
+
+  // 3. Rate Limiting Check (only for proxy routes)
+  const clientIp = request.headers.get('CF-Connecting-IP') || 'unknown';
+  if (!checkRateLimit(clientIp)) {
+    return new Response('Rate limit exceeded. Please try again later.', {
+      status: 429,
+      headers: getCorsHeaders(),
+    });
+  }
+
+  const rawInput = url.searchParams.get('l');
+
+  if (!rawInput) {
+    return new Response('Error: Missing "l" parameter', {
+      status: 400,
+      headers: getCorsHeaders(),
+    });
+  }
+
+  // Decode URL param (backward compatible)
+  let input;
+  try {
+    input = decodeURIComponent(rawInput);
+  } catch (e) {
+    input = rawInput;
+  }
+
+  try {
+    // 4. Handle HEAD requests for metadata
+    if (request.method === 'HEAD') {
+      return handleHeadRequest(request, input);
+    }
+
+    // 5. Route to appropriate proxy handler
+    if (input.startsWith('http')) {
+      return proxyDirectLink(request, input);
+    } else {
+      return proxyDriveId(request, input);
+    }
+  } catch (err) {
+    console.error('Worker Error:', err);
+    return new Response(`Error: ${err.message}`, {
+      status: 500,
+      headers: getCorsHeaders(),
+    });
+  }
+}
+
+// ===========================================
+// CRYPTO DECRYPT HANDLER
+// Called by hdhub4u and other providers running on Hermes (React Native),
+// which lacks the Web Crypto API and Node's crypto module.
+//
+// POST /decrypt
+// Body: { payload, method, key, iv }
+//
+//   payload  — Base64-encoded ciphertext
+//   method   — "aes-cbc" | "aes-ecb" | "aes-ctr" | "rc4"
+//   key      — UTF-8 string  OR  "hex:0123abcd..." for raw hex bytes
+//   iv       — UTF-8 string  OR  "hex:0123abcd..." (required for CBC/CTR)
+//
+// Response 200: { result: "<decrypted plaintext>" }
+// Response 4xx/5xx: { error: "<message>" }
+// ===========================================
+
+function parseKeyMaterial(str) {
+  if (!str) return new Uint8Array(0);
+  if (str.startsWith('hex:')) {
+    const hex = str.slice(4);
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    }
+    return bytes;
+  }
+  return new TextEncoder().encode(str);
+}
+
+function base64ToBytes(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+// RC4 — pure JS because Web Crypto doesn't support it
+function rc4Decrypt(keyBytes, dataBytes) {
+  const S = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) S[i] = i;
+  let j = 0;
+  for (let i = 0; i < 256; i++) {
+    j = (j + S[i] + keyBytes[i % keyBytes.length]) & 0xFF;
+    [S[i], S[j]] = [S[j], S[i]];
+  }
+  let i = 0; j = 0;
+  const out = new Uint8Array(dataBytes.length);
+  for (let k = 0; k < dataBytes.length; k++) {
+    i = (i + 1) & 0xFF;
+    j = (j + S[i]) & 0xFF;
+    [S[i], S[j]] = [S[j], S[i]];
+    out[k] = dataBytes[k] ^ S[(S[i] + S[j]) & 0xFF];
+  }
+  return out;
+}
+
+function cryptoJson(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...getCorsHeaders() },
+  });
+}
+
+async function handleDecrypt(request) {
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: getCorsHeaders() });
+  }
+
+  if (request.method !== 'POST') {
+    return cryptoJson({ error: 'POST required' }, 405);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return cryptoJson({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const { payload, method, key, iv } = body;
+
+  if (!payload) return cryptoJson({ error: 'Missing payload' }, 400);
+  if (!method)  return cryptoJson({ error: 'Missing method' }, 400);
+  if (!key)     return cryptoJson({ error: 'Missing key' }, 400);
+
+  const keyBytes    = parseKeyMaterial(key);
+  const ivBytes     = parseKeyMaterial(iv || '');
+  const cipherBytes = base64ToBytes(payload);
+
+  try {
+    // ── RC4 (pure JS) ──────────────────────────────────────────────────────
+    if (method === 'rc4') {
+      const plainBytes = rc4Decrypt(keyBytes, cipherBytes);
+      return cryptoJson({ result: new TextDecoder().decode(plainBytes) });
+    }
+
+    // ── AES-CBC ────────────────────────────────────────────────────────────
+    if (method === 'aes-cbc') {
+      if (ivBytes.length === 0) return cryptoJson({ error: 'IV required for aes-cbc' }, 400);
+      const cryptoKey = await crypto.subtle.importKey(
+        'raw', keyBytes, { name: 'AES-CBC' }, false, ['decrypt']
+      );
+      const decBuffer = await crypto.subtle.decrypt(
+        { name: 'AES-CBC', iv: ivBytes }, cryptoKey, cipherBytes
+      );
+      return cryptoJson({ result: new TextDecoder().decode(decBuffer) });
+    }
+
+    // ── AES-CTR ────────────────────────────────────────────────────────────
+    if (method === 'aes-ctr') {
+      if (ivBytes.length === 0) return cryptoJson({ error: 'Counter/IV required for aes-ctr' }, 400);
+      const cryptoKey = await crypto.subtle.importKey(
+        'raw', keyBytes, { name: 'AES-CTR' }, false, ['decrypt']
+      );
+      const decBuffer = await crypto.subtle.decrypt(
+        { name: 'AES-CTR', counter: ivBytes, length: 64 }, cryptoKey, cipherBytes
+      );
+      return cryptoJson({ result: new TextDecoder().decode(decBuffer) });
+    }
+
+    // ── AES-ECB ────────────────────────────────────────────────────────────
+    // Web Crypto has no native ECB support. Workaround: decrypt each 16-byte
+    // block independently via AES-CBC with a zero IV (single-block CBC with
+    // zero IV is equivalent to ECB for that block).
+    if (method === 'aes-ecb') {
+      const blockSize = 16;
+      const numBlocks = Math.floor(cipherBytes.length / blockSize);
+      const zeroIv    = new Uint8Array(blockSize);
+
+      const cryptoKey = await crypto.subtle.importKey(
+        'raw', keyBytes, { name: 'AES-CBC' }, false, ['decrypt']
+      );
+
+      const combined = new Uint8Array(cipherBytes.length);
+      let offset = 0;
+
+      for (let b = 0; b < numBlocks; b++) {
+        // Pad cipher block to 2 blocks so AES-CBC has something to work with
+        const twoBlocks = new Uint8Array(blockSize * 2);
+        twoBlocks.set(cipherBytes.slice(b * blockSize, (b + 1) * blockSize), 0);
+
+        const dec = await crypto.subtle.decrypt(
+          { name: 'AES-CBC', iv: zeroIv }, cryptoKey, twoBlocks
+        );
+        combined.set(new Uint8Array(dec).slice(0, blockSize), offset);
+        offset += blockSize;
+      }
+
+      // Strip PKCS7 padding from last block
+      const padLen    = combined[combined.length - 1];
+      const plainBytes = combined.slice(0, combined.length - padLen);
+      return cryptoJson({ result: new TextDecoder().decode(plainBytes) });
+    }
+
+    return cryptoJson({ error: `Unsupported method: ${method}` }, 400);
+
+  } catch (err) {
+    console.error('[DECRYPT] Error:', err.message);
+    return cryptoJson({ error: err.message }, 500);
+  }
+}
+
+// ===========================================
+// HEAD REQUEST HANDLER
+// ===========================================
+async function handleHeadRequest(request, input) {
+  const cacheKey = input.startsWith('http') ? input : `drive:${input}`;
+
+  const cached = metaCache.get(cacheKey);
+  if (cached) {
+    return new Response(null, {
+      status: 200,
+      headers: {
+        ...getCorsHeaders(),
+        'Content-Length': cached.length,
+        'Content-Type': cached.type,
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'public, max-age=3600',
+      },
+    });
+  }
+
+  try {
+    if (!input.startsWith('http')) {
+      // Drive file HEAD
+      const accessToken = await getAccessToken();
+      if (!accessToken) return new Response('Auth Failed', { status: 500 });
+
+      const driveApiUrl = `https://www.googleapis.com/drive/v3/files/${input}?alt=media&acknowledgeAbuse=true`;
+
+      const redirectRes = await fetch(driveApiUrl, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        redirect: 'manual',
+      });
+
+      let finalUrl = driveApiUrl;
+      if ([301, 302, 303, 307, 308].includes(redirectRes.status)) {
+        finalUrl = redirectRes.headers.get('Location') || driveApiUrl;
+      }
+
+      const response = await fetch(finalUrl, {
+        method: 'HEAD',
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        redirect: 'follow',
+      });
+
+      updateMetaCache(cacheKey, response, null);
+
+      return new Response(null, {
+        status: 200,
+        headers: {
+          ...getCorsHeaders(),
+          'Content-Length': response.headers.get('Content-Length') || '',
+          'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream',
+          'Accept-Ranges': 'bytes',
+        },
+      });
+    } else {
+      // Direct URL HEAD
+      const response = await fetch(input, {
+        method: 'HEAD',
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        redirect: 'follow',
+      });
+
+      updateMetaCache(cacheKey, response, null);
+
+      return new Response(null, {
+        status: 200,
+        headers: {
+          ...getCorsHeaders(),
+          'Content-Length': response.headers.get('Content-Length') || '',
+          'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream',
+          'Accept-Ranges': 'bytes',
+        },
+      });
+    }
+  } catch (err) {
+    return new Response('Metadata fetch failed', { status: 500 });
+  }
+}
+
+// ===========================================
+// PROXY DIRECT URL
+// ===========================================
+async function proxyDirectLink(request, targetUrl) {
+  return await fetchWithRetry(async () => {
+    const hasRange    = request.headers.has('Range');
+    const rangeHeader = request.headers.get('Range');
+
+    const cleanHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      'Accept': '*/*',
+      'Accept-Encoding': 'identity',
+      'Connection': 'keep-alive',
+    };
+    if (hasRange) cleanHeaders['Range'] = rangeHeader;
+
+    // Step 1: manual redirect to capture real URL
+    const firstRes = await fetch(targetUrl, {
+      method: 'GET',
+      headers: cleanHeaders,
+      redirect: 'manual',
+    });
+
+    let finalUrl = targetUrl;
+    if ([301, 302, 303, 307, 308].includes(firstRes.status)) {
+      finalUrl = firstRes.headers.get('Location') || targetUrl;
+    }
+
+    // Step 2: fetch real URL with Range preserved
+    const response = await fetch(finalUrl, {
+      method: 'GET',
+      headers: cleanHeaders,
+      redirect: 'follow',
+    });
+
+    if (!response.ok && response.status !== 206) {
+      const errText = await response.text();
+      throw new Error(`Upstream error (${response.status}): ${errText.substring(0, 200)}`);
+    }
+
+    return buildResponse(response, null);
+  });
+}
+
+// ===========================================
+// PROXY GOOGLE DRIVE FILE ID
+// ===========================================
+async function proxyDriveId(request, fileId) {
+  return await fetchWithRetry(async () => {
+    const accessToken = await getAccessToken();
+    if (!accessToken) throw new Error('Authentication Failed');
+
+    const hasRange    = request.headers.has('Range');
+    const rangeHeader = request.headers.get('Range');
+    const cacheKey    = `drive:${fileId}`;
+    const cachedMeta  = metaCache.get(cacheKey);
+
+    if (CONFIG.enableCloudflareCache && !hasRange) {
+      const cache = caches.default;
+      const cacheResponse = await cache.match(request);
+      if (cacheResponse) return cacheResponse;
+    }
+
+    const driveApiUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&acknowledgeAbuse=true`;
+
+    // Step 1: hit Drive API with redirect:manual to capture the real CDN URL
+    const firstRes = await fetch(driveApiUrl, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Connection: 'keep-alive',
+      },
+      redirect: 'manual',
+    });
+
+    // Step 2: resolve the final CDN URL
+    let finalUrl = driveApiUrl;
+    if ([301, 302, 303, 307, 308].includes(firstRes.status)) {
+      const location = firstRes.headers.get('Location');
+      if (location) finalUrl = location;
+    }
+
+    // Step 3: build clean headers for CDN request
+    const cdnHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Accept': '*/*',
+      'Accept-Encoding': 'identity',
+      'Connection': 'keep-alive',
+    };
+    if (hasRange) cdnHeaders['Range'] = rangeHeader;
+
+    // Step 4: fetch from CDN
+    const fetchOptions = {
+      method: 'GET',
+      headers: cdnHeaders,
+      redirect: 'follow',
+    };
+
+    if (CONFIG.enableCloudflareCache && !hasRange) {
+      fetchOptions.cf = { cacheEverything: true, cacheTtl: 3600 };
+    }
+
+    const response = await fetch(finalUrl, fetchOptions);
+
+    if (!response.ok && response.status !== 206) {
+      const errText = await response.text();
+      throw new Error(`CDN error (${response.status}): ${errText.substring(0, 200)}`);
+    }
+
+    updateMetaCache(cacheKey, response, cachedMeta);
+    return buildResponse(response, cachedMeta);
+  });
+}
+
+// ===========================================
+// RETRY WITH EXPONENTIAL BACKOFF
+// ===========================================
+async function fetchWithRetry(fetchFunction, retries = CONFIG.maxRetries) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fetchFunction();
+    } catch (err) {
+      if (i === retries - 1) throw err;
+      const delay = CONFIG.retryDelay * Math.pow(2, i);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      console.log(`Retry attempt ${i + 1}/${retries} after ${delay}ms`);
+    }
+  }
+}
+
+// ===========================================
+// BUILD RESPONSE WITH CORRECT HEADERS
+// ===========================================
+function buildResponse(upstreamResponse, cachedMeta) {
+  const responseHeaders = new Headers(upstreamResponse.headers);
+
+  Object.entries(getCorsHeaders()).forEach(([key, value]) => {
+    responseHeaders.set(key, value);
+  });
+
+  responseHeaders.set('Accept-Ranges', 'bytes');
+  responseHeaders.set('Content-Disposition', 'inline');
+  responseHeaders.set('X-Content-Type-Options', 'nosniff');
+
+  if (upstreamResponse.status === 206) {
+    responseHeaders.set('Cache-Control', 'public, max-age=3600');
+  } else {
+    responseHeaders.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+  }
+
+  if (!responseHeaders.has('Content-Length') && cachedMeta?.length) {
+    responseHeaders.set('Content-Length', cachedMeta.length);
+  }
+  if (!responseHeaders.has('Content-Type') && cachedMeta?.type) {
+    responseHeaders.set('Content-Type', cachedMeta.type);
+  }
+
+  responseHeaders.delete('Content-Security-Policy');
+  responseHeaders.delete('X-Frame-Options');
+
+  return new Response(upstreamResponse.body, {
+    status: upstreamResponse.status,
+    statusText: upstreamResponse.statusText,
+    headers: responseHeaders,
+  });
+}
+
+// ===========================================
+// RATE LIMITING
+// ===========================================
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const windowMs = 60000;
+
+  if (!rateLimitMap.has(ip)) {
+    rateLimitMap.set(ip, { count: 1, resetTime: now + windowMs });
+    return true;
+  }
+
+  const record = rateLimitMap.get(ip);
+
+  if (now > record.resetTime) {
+    record.count = 1;
+    record.resetTime = now + windowMs;
+    return true;
+  }
+
+  if (record.count >= CONFIG.rateLimitPerMinute) {
+    return false;
+  }
+
+  record.count++;
+  return true;
+}
+
+// ===========================================
+// CORS HEADERS
+// ===========================================
+function getCorsHeaders() {
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Range, Content-Type, Authorization',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges',
+    'Access-Control-Max-Age': '86400',
+  };
+}
+
+// ===========================================
+// META CACHE WITH TTL
+// ===========================================
+function updateMetaCache(key, response, existingCache) {
+  if (!existingCache && response.ok) {
+    const len  = response.headers.get('Content-Length');
+    const type = response.headers.get('Content-Type');
+    if (len && type) {
+      metaCache.set(key, {
+        length: len,
+        type: type,
+        timestamp: Date.now(),
+      });
+
+      setTimeout(() => {
+        const cached = metaCache.get(key);
+        if (cached && Date.now() - cached.timestamp > 3600000) {
+          metaCache.delete(key);
+        }
+      }, 3600000);
+    }
+  }
+}
+
+// ===========================================
+// GOOGLE OAUTH ACCESS TOKEN MANAGER
+// ===========================================
+async function getAccessToken() {
+  if (tokenCache.token && tokenCache.expires > Date.now()) {
+    return tokenCache.token;
+  }
+
+  const tokenUrl = 'https://oauth2.googleapis.com/token';
+  const body = new URLSearchParams({
+    client_id: CONFIG.clientId,
+    client_secret: CONFIG.clientSecret,
+    refresh_token: CONFIG.refreshToken,
+    grant_type: 'refresh_token',
+  });
+
+  const response = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  });
+
+  const data = await response.json();
+
+  if (data.access_token) {
+    tokenCache.token = data.access_token;
+    tokenCache.expires = Date.now() + 3500 * 1000;
+    return data.access_token;
+  }
+
+  console.error('Token refresh failed:', data);
+  return null;
+}
