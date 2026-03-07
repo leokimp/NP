@@ -1,0 +1,1099 @@
+/**
+ * FilmyCab — South Indian Hindi Dubbed — Cloudflare Worker
+ * ══════════════════════════════════════════════════════════════════
+ *
+ * WHAT THIS DOES:
+ *   • Serves a Stremio / Nuvio catalog addon at your workers.dev URL
+ *   • Scrapes filmyfy.fit/South-Movies for Hindi dubbed South Indian films
+ *   • Domain is auto-resolved from phisher98/TVVVV domains.json (key: "filmycab")
+ *     so the worker never breaks when filmyfy.fit changes domains
+ *   • Every 6 hours a cron job scrapes for new titles, matches them via
+ *     imdbapi.dev (8-pass) + TMDB fallback, and adds them to the catalog
+ *   • All matching improvements from wbts.js are baked in:
+ *       - Year appended to query string (not a broken startYear= param)
+ *       - SIM_DELTA_TABLE capped at 3yr (prevents Hollywood same-name matches)
+ *       - AKA Deep Pass via imdbapi /akas?country=IN (δ ≤ 4yr)
+ *       - TMDB AKA Deep Pass via /alternative_titles?country=IN
+ *       - Single-char title fix ("9", "U", "V" no longer dropped)
+ *       - Year extraction: parenthesized year always wins over bare year
+ *       - limit=20 per search for better regional film recall
+ *
+ * ENDPOINTS:
+ *   GET /manifest.json
+ *   GET /catalog/movie/filmycab-south.json
+ *   GET /catalog/movie/filmycab-south/skip=N.json
+ *   GET /catalog/movie/filmycab-south/genre=Action.json
+ *   GET /catalog/movie/filmycab-south/search=kantara.json
+ *   GET /meta/movie/tt1234567.json
+ *   GET /admin/stats?secret=PASS
+ *   GET /admin/trigger-update?secret=PASS
+ *
+ * ══════════════════════════════════════════════════════════════════
+ * SETUP
+ * ══════════════════════════════════════════════════════════════════
+ *
+ * 1.  npm install -g wrangler && wrangler login
+ *
+ * 2.  wrangler kv:namespace create "CATALOG_KV"
+ *     → copy the id into wrangler.toml
+ *
+ * 3.  wrangler deploy
+ *
+ * 4a. If you have an existing JSON catalog to seed:
+ *       node seed.js your_catalog.json
+ *
+ * 4b. If starting fresh (empty catalog, let cron build it):
+ *       node seed.js --empty
+ *       Then hit: /admin/trigger-update?secret=PASS to kick off first scrape
+ *
+ * 5.  Add to Nuvio/Stremio:
+ *       https://filmycab-south.YOUR_SUBDOMAIN.workers.dev/manifest.json
+ *
+ * ══════════════════════════════════════════════════════════════════
+ */
+
+// ─────────────────────────────────────────────────────────────────
+// 1. CONFIG
+// ─────────────────────────────────────────────────────────────────
+const ADDON_ID      = "com.filmycab.south.hindidubbed";
+const ADDON_NAME    = "South Indian";
+const ADDON_VERSION = "2.0.0";
+const PAGE_SIZE     = 100;
+
+// Domain resolver — reads live from phisher98/TVVVV domains.json
+const DOMAIN_JSON_URL = "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json";
+const DOMAIN_KEY      = "filmycab";              // key in domains.json → filmyfy.fit
+const DOMAIN_FALLBACK = "https://filmyfy.fit";   // used if fetch fails
+const TARGET_PATH     = "/page-cat/2/South-Movies/";
+
+// API bases
+const IAPI_BASE = "https://api.imdbapi.dev";
+const TMDB_BASE = "https://api.themoviedb.org/3";
+
+// Cron scrape config
+const CRON_SCRAPE_PAGES = 2;   // pages of filmyfy.fit to check per run (~30 titles/page)
+const CRON_MAX_NEW      = 20;  // max new titles to process per run (Worker CPU limit)
+
+// Rate-limit retry — exponential backoff 5s → 120s, 6 attempts
+const RATE_RETRIES      = 6;
+const RATE_BACKOFF_BASE = 5_000;
+const RATE_BACKOFF_MAX  = 120_000;
+
+// ── Matching thresholds (all from wbts.js final state) ────────────
+const MIN_TITLE_SIM    = 0.62;
+const NO_YEAR_MIN_SIM  = 0.82;
+const ACCEPT_THRESHOLD = 0.80;
+
+// Capped at 3yr across all tiers.
+// Indian dubbing delays cluster at ≤3yr (KGF, Kantara, Baahubali all Δ3 — safe).
+// The old 10yr/6yr windows let Hollywood same-name films match across decades.
+const SIM_DELTA_TABLE  = [[0.92, 3], [0.78, 3], [0.62, 3]];
+
+// KV keys
+const KV_METAS      = "metas";
+const KV_KNOWN_RAWS = "known_raws";
+
+// Domain cache (per Worker instance lifetime)
+let _resolvedDomain = null;
+
+// ─────────────────────────────────────────────────────────────────
+// 2. HTTP UTILITIES
+// ─────────────────────────────────────────────────────────────────
+const CORS = {
+  "Access-Control-Allow-Origin":  "*",
+  "Access-Control-Allow-Headers": "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+};
+
+function json(data, status = 200, extra = {}) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json", ...CORS, ...extra },
+  });
+}
+
+function notFound() {
+  return json({ error: "Not found" }, 404);
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 3. ROUTER
+// ─────────────────────────────────────────────────────────────────
+export default {
+  async fetch(request, env, ctx) {
+    const url  = new URL(request.url);
+    const path = url.pathname;
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: CORS });
+    }
+
+    if (path === "/manifest.json" || path === "/") {
+      return handleManifest();
+    }
+
+    // /catalog/movie/filmycab-south.json
+    // /catalog/movie/filmycab-south/skip=100.json
+    // /catalog/movie/filmycab-south/genre=Action.json
+    // /catalog/movie/filmycab-south/search=kantara.json
+    const catalogMatch = path.match(
+      /^\/catalog\/movie\/filmycab-south(?:\/(.+?))?\.json$/
+    );
+    if (catalogMatch) {
+      const extra = parseExtra(catalogMatch[1] || "");
+      return handleCatalog(env, extra);
+    }
+
+    // /admin/remove?secret=PASS&imdb=tt1234567
+    if (path === "/admin/remove") {
+      if (url.searchParams.get("secret") !== env.ADMIN_SECRET) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+      const imdbId = url.searchParams.get("imdb");
+      if (!imdbId) return json({ error: "Missing ?imdb=ttXXXXXXX" }, 400);
+      return handleRemove(env, imdbId);
+    }
+
+    // /meta/movie/tt1234567.json
+    const metaMatch = path.match(/^\/meta\/movie\/(tt\d+)\.json$/);
+    if (metaMatch) {
+      return handleMeta(env, metaMatch[1]);
+    }
+    
+    // /admin/stats?secret=PASS
+    if (path === "/admin/stats") {
+      if (url.searchParams.get("secret") !== env.ADMIN_SECRET) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+      return handleStats(env);
+    }
+
+    // /admin/trigger-update?secret=PASS
+    // ctx.waitUntil() lets the update run in the background AFTER the response
+    // is returned. Without this, the Worker's 30s HTTP timeout kills the job
+    // mid-run — scraping + 8-pass matching + meta fetching easily takes minutes.
+    // The cron gets 15 min; HTTP requests do not. ctx.waitUntil() bridges that gap.
+    if (path === "/admin/trigger-update") {
+      if (url.searchParams.get("secret") !== env.ADMIN_SECRET) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+      try {
+        const result = await runUpdate(env);
+        return json(result, 200);
+      } catch (e) {
+        return json({ error: e.message, stack: e.stack }, 500);
+      }
+    }
+
+    return notFound();
+  },
+
+  async scheduled(event, env) {
+    console.log("[CRON] Starting scheduled update...");
+    const result = await runUpdate(env);
+    console.log("[CRON] Done:", JSON.stringify(result));
+  },
+};
+
+// ─────────────────────────────────────────────────────────────────
+// 4. MANIFEST
+// ─────────────────────────────────────────────────────────────────
+function handleManifest() {
+  const genres = [
+    "Comedy","Action","Adventure","Biography","Crime",
+    "Documentary","Drama","Family","Fantasy","History","Horror",
+    "Music","Mystery","Romance","Sci-Fi","Thriller","War",
+  ];
+
+  return json({
+    id:          ADDON_ID,
+    version:     ADDON_VERSION,
+    name:        ADDON_NAME,
+    description: "Hindi dubbed South Indian cinema — Tamil, Telugu, Malayalam, Kannada. Auto-updated every 6 hours.",
+    logo:        "https://filmyfy.fit/wp-content/uploads/2023/01/cropped-favicon.png",
+    background:  "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=1920&q=80",
+    resources:   ["catalog", "meta"],
+    types:       ["movie"],
+    idPrefixes:  ["tt"],
+    catalogs: [{
+      type: "movie",
+      id:   "filmycab-south",
+      name: "South Indian",
+      extra: [
+        { name: "genre",  isRequired: false, options: genres },
+        { name: "skip",   isRequired: false },
+        { name: "search", isRequired: false },
+      ],
+      extraSupported: ["genre", "skip", "search"],
+    }],
+    behaviorHints: {
+      configurable:          false,
+      configurationRequired: false,
+      adult:                 false,
+    },
+  });
+}
+
+
+// ─────────────────────────────────────────────────────────────────
+// 5. CATALOG
+// ─────────────────────────────────────────────────────────────────
+async function handleCatalog(env, extra) {
+  const { genre, search, skip } = extra;
+  const skipN = parseInt(skip || "0", 10) || 0;
+
+  const raw = await env.CATALOG_KV.get(KV_METAS);
+  if (!raw) return json({ metas: [] });
+  let metas = JSON.parse(raw);
+
+  if (genre) {
+    metas = metas.filter(m =>
+      (m.genres || m.genre || []).some(g =>
+        g.toLowerCase() === genre.toLowerCase()
+      )
+    );
+  }
+
+  if (search) {
+    const normalize = s => s.toLowerCase().replace(/[.\-:]/g, "");
+    const q      = search.toLowerCase();
+    const qNorm  = normalize(search);
+
+    metas = metas.filter(m => {
+      const name     = (m.name || "").toLowerCase();
+      const nameNorm = normalize(m.name || "");
+      return name.includes(q) || nameNorm.includes(qNorm);
+    });
+
+    metas.sort((a, b) => {
+      const aNorm = normalize(a.name || "");
+      const bNorm = normalize(b.name || "");
+      const aS = (a.name || "").toLowerCase().startsWith(q) || aNorm.startsWith(qNorm) ? 0 : 1;
+      const bS = (b.name || "").toLowerCase().startsWith(q) || bNorm.startsWith(qNorm) ? 0 : 1;
+      return aS - bS;
+    });
+  }
+
+  const page = metas.slice(skipN, skipN + PAGE_SIZE);
+
+  return json({ metas: page, cacheMaxAge: 3600 });
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 6. META
+// ─────────────────────────────────────────────────────────────────
+async function handleMeta(env, imdbId) {
+  const raw = await env.CATALOG_KV.get(KV_METAS);
+  if (!raw) return json({ meta: null }, 404);
+  const metas = JSON.parse(raw);
+  const meta  = metas.find(m => m.imdb_id === imdbId || m.id === imdbId);
+  if (!meta) return json({ meta: null }, 404);
+  return json({ meta });
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 7. ADMIN — STATS
+// ─────────────────────────────────────────────────────────────────
+async function handleStats(env) {
+  const raw      = await env.CATALOG_KV.get(KV_METAS);
+  const rawsData = await env.CATALOG_KV.get(KV_KNOWN_RAWS);
+  const metas    = raw      ? JSON.parse(raw)      : [];
+  const knownRaws = rawsData ? JSON.parse(rawsData) : [];
+
+  const genreCounts = {};
+  for (const m of metas) {
+    for (const g of (m.genres || m.genre || [])) {
+      genreCounts[g] = (genreCounts[g] || 0) + 1;
+    }
+  }
+
+  return json({
+    total_movies:     metas.length,
+    total_known_raws: knownRaws.length,
+    genres:           genreCounts,
+    newest:           metas.slice(0, 5).map(m => `${m.name} (${m.year})`),
+    domain_cache:     _resolvedDomain || "not resolved yet",
+  });
+}
+
+async function handleRemove(env, imdbId) {
+  const raw = await env.CATALOG_KV.get(KV_METAS);
+  if (!raw) return json({ error: "Catalog is empty" }, 404);
+
+  const metas  = JSON.parse(raw);
+  const before = metas.length;
+  const filtered = metas.filter(m => m.imdb_id !== imdbId && m.id !== imdbId);
+
+  if (filtered.length === before) {
+    return json({ error: `Not found: ${imdbId}` }, 404);
+  }
+
+  await env.CATALOG_KV.put(KV_METAS, JSON.stringify(filtered));
+
+  return json({
+    status:  "removed",
+    imdb_id: imdbId,
+    total:   filtered.length,
+  });
+}
+
+
+// ─────────────────────────────────────────────────────────────────
+// 8. PARSE EXTRA (Stremio path segment)
+// ─────────────────────────────────────────────────────────────────
+function parseExtra(segment) {
+  const out = {};
+  if (!segment) return out;
+  const parts = decodeURIComponent(segment).split(/[&|]/);
+  for (const p of parts) {
+    const [k, ...vParts] = p.split("=");
+    if (k) out[k.trim()] = vParts.join("=").trim();
+  }
+  return out;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 9. CRON UPDATE LOGIC
+// ═══════════════════════════════════════════════════════════════════
+async function runUpdate(env) {
+  const log = [];
+  const say = msg => { console.log(msg); log.push(msg); };
+
+  say("[UPDATE] Loading existing catalog from KV...");
+  const existingRaw  = await env.CATALOG_KV.get(KV_METAS);
+  const knownRawsRaw = await env.CATALOG_KV.get(KV_KNOWN_RAWS);
+  const metas     = existingRaw  ? JSON.parse(existingRaw)           : [];
+  const knownRaws = knownRawsRaw ? new Set(JSON.parse(knownRawsRaw)) : new Set();
+
+  say(`[UPDATE] ${metas.length} movies in catalog, ${knownRaws.size} known raws`);
+
+  // Step 1: Resolve domain + scrape
+  say(`[UPDATE] Resolving domain and scraping filmyfy.fit (${CRON_SCRAPE_PAGES} pages)...`);
+  const scraped = await scrapeFilmyCab(CRON_SCRAPE_PAGES);
+  say(`[UPDATE] Scraped ${scraped.length} titles`);
+
+  // Step 2: Filter — skip TV first, then build "title|year" dedup key
+  //         to match the existing KV format (900+ entries use this format)
+  const newItems = [];
+  let skippedTV = 0;
+
+  for (const raw of scraped) {
+    // TV check BEFORE anything else — no point extracting variants for series
+    if (isTV(raw)) {
+      skippedTV++;
+      continue;
+    }
+
+    const { variants, year } = extractVariants(raw);
+    if (!variants.length) continue;
+
+    // Build key in same format as existing KV entries: "title|year"
+    const dedupKey = `${variants[0].toLowerCase()}|${year || ""}`;
+
+    if (!isKnownRaw(dedupKey, knownRaws)) {
+      newItems.push({ raw, dedupKey, variants, year });
+    }
+  }
+
+  say(`[UPDATE] ${newItems.length} new titles to process (skipped ${skippedTV} TV)`);
+
+  if (newItems.length === 0) {
+    return { status: "up-to-date", total: metas.length, new_found: 0, skipped_tv: skippedTV, log };
+  }
+
+  // Step 3: Process up to CRON_MAX_NEW
+  const toProcess   = newItems.slice(0, CRON_MAX_NEW);
+  const existingIds = new Set(metas.map(m => m.imdb_id || m.id).filter(Boolean));
+
+  let added = 0, notFound = 0;
+
+  for (const { raw, dedupKey, variants, year } of toProcess) {
+    // Mark as known immediately so re-runs don't retry failed lookups
+    knownRaws.add(dedupKey);
+
+    say(`[SEARCH] "${variants[0]}" (${year || "?"})`);
+
+    const result = await searchMovie(variants, year, env);
+    const imdbId = result?.id || null;
+
+    if (!imdbId) {
+      say(`  ✗ Not found`);
+      notFound++;
+      continue;
+    }
+
+    if (existingIds.has(imdbId)) {
+      say(`  ~ Already in catalog: ${imdbId}`);
+      continue;
+    }
+
+    try {
+      const meta = await fetchFullMeta(raw, imdbId, env);
+      if (meta && meta.imdb_id) {
+        metas.unshift(meta);
+        existingIds.add(imdbId);
+        added++;
+        say(`  ✓ Added: "${meta.name}" (${meta.year}) [${imdbId}] via ${result.pass}`);
+      }
+    } catch (e) {
+      say(`  ✗ Error fetching meta: ${e.message}`);
+    }
+  }
+
+  // Step 4: Save
+  say(`[UPDATE] Saving... added=${added} skippedTV=${skippedTV} notFound=${notFound}`);
+  await env.CATALOG_KV.put(KV_METAS,      JSON.stringify(metas));
+  await env.CATALOG_KV.put(KV_KNOWN_RAWS, JSON.stringify([...knownRaws]));
+  say(`[UPDATE] Done. Catalog now has ${metas.length} movies.`);
+
+  return {
+    status:        "updated",
+    total:         metas.length,
+    new_found:     added,
+    skipped_tv:    skippedTV,
+    not_found:     notFound,
+    still_pending: newItems.length - toProcess.length,
+    log,
+  };
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+// 10. DOMAIN RESOLVER + SCRAPER
+// ═══════════════════════════════════════════════════════════════════
+async function getFilmyCabDomain() {
+  if (_resolvedDomain) return _resolvedDomain;
+
+  console.log(`[DOMAIN] Fetching latest domain for key "${DOMAIN_KEY}"...`);
+  try {
+    const r = await fetch(DOMAIN_JSON_URL, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+    });
+    if (r.ok) {
+      const data = await r.json();
+      if (data && data[DOMAIN_KEY]) {
+        _resolvedDomain = data[DOMAIN_KEY].replace(/\/$/, "") + TARGET_PATH;
+        console.log(`[DOMAIN] ✅ Resolved: ${_resolvedDomain}`);
+        return _resolvedDomain;
+      }
+      console.warn(`[DOMAIN] Key "${DOMAIN_KEY}" not found — using fallback`);
+    } else {
+      console.warn(`[DOMAIN] HTTP ${r.status} — using fallback`);
+    }
+  } catch (e) {
+    console.warn(`[DOMAIN] Fetch failed: ${e.message} — using fallback`);
+  }
+
+  _resolvedDomain = DOMAIN_FALLBACK.replace(/\/$/, "") + TARGET_PATH;
+  console.log(`[DOMAIN] ⚠️ Using fallback: ${_resolvedDomain}`);
+  return _resolvedDomain;
+}
+
+async function scrapeFilmyCab(maxPages) {
+  const baseUrl = await getFilmyCabDomain();
+  const allRaws = [];
+
+  for (let page = 1; page <= maxPages; page++) {
+    const url = page === 1 ? baseUrl : `${baseUrl}${page}/`;
+    try {
+      const r = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
+      });
+      if (!r.ok) break;
+      const html   = await r.text();
+      const titles = parseFilmyCabHTML(html);
+      if (!titles.length) break;
+      allRaws.push(...titles);
+    } catch (e) {
+      console.error(`[SCRAPE] Page ${page} failed: ${e.message}`);
+      break;
+    }
+  }
+
+  // Deduplicate
+  const seen = new Set();
+  return allRaws.filter(r => {
+    const k = r.toLowerCase().trim();
+    if (seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+}
+
+function parseFilmyCabHTML(html) {
+  // filmyfy.fit uses: <p>TITLE</p></figcaption>
+  // Same pattern confirmed across 300+ titles in wbts.js runs
+  const titles = [];
+  const re = /<p>([^<]+)<\/p><\/figcaption>/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const raw = m[1].trim();
+    if (raw && raw.length > 5) titles.push(raw);
+  }
+  return titles;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 11. TITLE CLEANING & VARIANT EXTRACTION
+//     All fixes from wbts.js final state applied here
+// ═══════════════════════════════════════════════════════════════════
+const PLATFORM_RE = /\b(JioHotstar|Jio\s*Hotstar|Netflix|Amazon\s*Prime|Amazon|AMZN|SonyLIV|Sony\s*LIV|Zee\s*5?|UPLAY|ULLU|AltBalaji|Hotstar|Disney\+?|MX\s*Player|Voot|DS4K|JHS|UPLY|Prime\s*Video)\b/gi;
+const TV_RE_FLAG  = /\b(Season\s*\d|S\d{2}E\d{2}|Episode\s*\d|Complete\s*(Tv|Web)\s*Series|Web\s*Series|All\s*Episodes|Tv\s*Series)\b/i;
+
+function isTV(raw) {
+  return TV_RE_FLAG.test(raw);
+}
+
+function extractVariants(raw) {
+  let text = raw.replace(/^Download\s+/i, "").replace(/^\[18\+\]\s*/i, "");
+  text = text.replace(PLATFORM_RE, "");
+
+  let core = text;
+  let year = null;
+
+  // FIX: parenthesized year (YYYY) is the definitive marker — always check it first.
+  // Handles: "2001 Maniyan (2024)", "1920 The Evil Returns (2022)", "777 Charlie (2022)"
+  // The old regex grabbed the FIRST year-like number, which broke numeric-prefix titles.
+  const parenMatch = text.match(/\((\d{4})\)/);
+  if (parenMatch) {
+    core = text.slice(0, text.indexOf(parenMatch[0])).trim();
+    year = parenMatch[1];
+  } else {
+    // No parenthesized year — find bare year that comes AFTER at least one non-digit char.
+    // "Kantara 2022 Hindi" → core="Kantara", year="2022"  ✓
+    // "2001 Maniyan Hindi" → no match (leading digit) → falls through  ✓
+    const bareMatch = text.match(/^(.*?\D)\s+(19\d{2}|20\d{2})\b/);
+    if (bareMatch) {
+      core = bareMatch[1].trim();
+      year = bareMatch[2];
+    } else {
+      core = text.split(/(Dual Audio|Hindi|Full Movie)/i)[0].trim();
+    }
+  }
+
+  core = core
+    .replace(/\b(web-?dl|blu-?ray|webrip|dvdrip|hdcam|hdrip|4k|uhd|hevc|x264|x265|dd[\d.]+|dts|aac|hindi|dubbed|dual\s*audio|full\s*movie|\d{3,4}p|uncut|hdtv|org\.?)\b/gi, "")
+    .replace(/\{[^}]*\}|\[[^\]]*\]/g, "")
+    .trim();
+
+  const seen     = new Set();
+  const variants = [];
+
+  function add(v) {
+    v = v.replace(/\s+/g, " ").trim().replace(/^[.,–—\-:|()\s]+|[.,–—\-:|()\s]+$/g, "");
+    // FIX: was (v.length < 2) which blocked "9", "U", "V" — single-char/digit titles are valid
+    if (!v || (v.length < 2 && !/^[a-zA-Z0-9]$/.test(v))) return;
+    if (v === v.toUpperCase() && v.length > 3) {
+      v = v.charAt(0).toUpperCase() + v.slice(1).toLowerCase();
+    }
+    const lo = v.toLowerCase();
+    if (!seen.has(lo)) { seen.add(lo); variants.push(v); }
+  }
+
+  // Em-dash/en-dash → try last part first (original language title)
+  const emParts = core.split(/\s*[–—]\s*/);
+  if (emParts.length >= 2) {
+    add(emParts[emParts.length - 1].replace(/\([^)]*\)/g, ""));
+    add(emParts[0].replace(/\([^)]*\)/g, ""));
+    add(emParts.join(" ").replace(/\([^)]*\)/g, ""));
+  }
+
+  if (core.includes("|")) {
+    core.split("|").forEach(p => add(p.replace(/\([^)]*\)/g, "")));
+  }
+
+  const colonParts = core.split(/\s*:\s*/);
+  if (colonParts.length >= 2) {
+    add(colonParts[0]);
+    add(`${colonParts[0]} ${colonParts[1]}`);
+  }
+
+  // Parenthetical text (not year) — e.g. "Rowdy Hero (Maari) 2015" → adds "Maari"
+  const parens = core.match(/\(([^)]{3,})\)/g) || [];
+  for (const p of parens) {
+    const inner = p.slice(1, -1).trim();
+    if (!/^\d{4}$/.test(inner)) add(inner);
+  }
+
+  add(core.replace(/\([^)]*\)/g, ""));
+
+  for (const v of variants.slice(0, 3)) {
+    const short = v.split(/[:\-]/)[0].trim();
+    if (short && short !== v) add(short);
+  }
+
+  return { variants, year };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 12. CONFIDENCE SCORING
+// ═══════════════════════════════════════════════════════════════════
+function seqRatio(a, b) {
+  a = a.toLowerCase().trim();
+  b = b.toLowerCase().trim();
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  const m = a.length, n = b.length;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= m; i++) {
+    const curr = [i];
+    for (let j = 1; j <= n; j++) {
+      curr[j] = a[i-1] === b[j-1] ? prev[j-1] : 1 + Math.min(prev[j], curr[j-1], prev[j-1]);
+    }
+    prev = curr;
+  }
+  return Math.max(0, 1 - (2 * prev[n]) / (m + n));
+}
+
+function isKnownRaw(dedupKey, knownRaws, threshold = 0.85) {
+  // Fast path — exact match
+  if (knownRaws.has(dedupKey)) return true;
+
+  const [newTitle, newYear] = dedupKey.split("|");
+  if (!newTitle) return false;
+
+  // Slow path — fuzzy, only scans same-year entries
+  for (const key of knownRaws) {
+    const [knownTitle, knownYear] = key.split("|");
+    if (knownYear !== newYear) continue;
+    const sim = seqRatio(newTitle, knownTitle);
+    if (sim >= threshold) {
+      console.log(`[DEDUP] Fuzzy match: "${newTitle}" ~ "${knownTitle}" (${sim.toFixed(2)})`);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function titleSim(query, resultTitle) {
+  query       = query.toLowerCase().trim();
+  resultTitle = resultTitle.toLowerCase().trim();
+  if (!query || !resultTitle) return 0;
+
+  const base       = seqRatio(query, resultTitle);
+  const rShort     = resultTitle.split(/[:\-–—]/)[0].trim();
+  const short      = rShort !== resultTitle ? seqRatio(query, rShort) : 0;
+  const qTok       = new Set(query.split(/\s+/));
+  const rTok       = new Set(resultTitle.split(/\s+/));
+  const inter      = [...qTok].filter(t => rTok.has(t)).length;
+  const tok        = (qTok.size + rTok.size) > 0 ? (2 * inter) / (qTok.size + rTok.size) : 0;
+  let contain = 0;
+  if (query.length > 4) {
+    if (resultTitle.includes(query)) contain = query.length / resultTitle.length;
+    else if (query.includes(resultTitle)) contain = resultTitle.length / query.length;
+  }
+  return Math.max(base, short, tok * 0.9, contain * 0.85);
+}
+
+function yearBonus(qy, ry) {
+  if (!qy || !ry) return 0;
+  const d = Math.abs(parseInt(qy) - parseInt(ry));
+  if (isNaN(d)) return 0;
+  if (d === 0) return 0.30;
+  if (d === 1) return 0.20;
+  if (d === 2) return 0.10;
+  if (d === 3) return 0.05;
+  if (d <= 5)  return 0.00;
+  if (d <= 10) return -0.10;
+  return -0.30;
+}
+
+function calcConfidence(query, resultTitle, queryYear, resultYear, noYear = false) {
+  const ts = titleSim(query, resultTitle);
+  if (ts < MIN_TITLE_SIM) return 0;
+  if (noYear && ts < NO_YEAR_MIN_SIM) return 0;
+  if (queryYear && resultYear) {
+    const delta = Math.abs(parseInt(queryYear) - parseInt(resultYear));
+    let maxDelta = 0;
+    for (const [thresh, allowed] of SIM_DELTA_TABLE) {
+      if (ts >= thresh) { maxDelta = allowed; break; }
+    }
+    if (delta > maxDelta) return 0;
+  }
+  return ts + (noYear ? 0 : yearBonus(queryYear, resultYear));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 13. API FETCHING
+// ═══════════════════════════════════════════════════════════════════
+async function apiGet(url) {
+  let wait = RATE_BACKOFF_BASE;
+  for (let attempt = 0; attempt <= RATE_RETRIES; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers: { "Accept": "application/json", "User-Agent": "Mozilla/5.0" },
+      });
+      if (response.status === 429) {
+        const retryAfter = response.headers.get("Retry-After");
+        const waitMs = retryAfter ? parseInt(retryAfter) * 1000 : wait;
+        console.warn(`[RATE LIMIT] 429 — waiting ${(waitMs/1000).toFixed(0)}s (attempt ${attempt+1})`);
+        if (attempt < RATE_RETRIES) {
+          await sleep(Math.min(waitMs, RATE_BACKOFF_MAX));
+          wait = Math.min(wait * 2, RATE_BACKOFF_MAX);
+          continue;
+        }
+        return null;
+      }
+      return response;
+    } catch (e) {
+      console.warn(`[FETCH] Error: ${e.message} — retrying`);
+      await sleep(3000);
+    }
+  }
+  return null;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ── imdbapi.dev search ─────────────────────────────────────────────
+async function iapiSearch(query, year = null) {
+  // FIX: imdbapi.dev is pure text-search. "startYear=N" param is silently ignored.
+  // Correct approach: append year to the query string itself.
+  // "KA 2024" → correct result #1. "KA&startYear=2024" → random garbage.
+  // Pass 4/5 call with year=null (intentional no-year fallback) → query unchanged.
+  const searchQuery = year ? `${query} ${year}` : query;
+  const params = new URLSearchParams({ query: searchQuery, limit: 20 });
+  const r = await apiGet(`${IAPI_BASE}/search/titles?${params}`);
+  if (!r || r.status !== 200) return [];
+  try { return (await r.json()).titles || []; } catch { return []; }
+}
+
+async function iapiGetTitle(imdbId) {
+  const r = await apiGet(`${IAPI_BASE}/titles/${imdbId}`);
+  if (!r || r.status !== 200) return null;
+  try { return await r.json(); } catch { return null; }
+}
+
+async function iapiReleaseDate(imdbId) {
+  const r = await apiGet(`${IAPI_BASE}/titles/${imdbId}/releaseDates?pageSize=50`);
+  if (!r || r.status !== 200) return null;
+  try {
+    const dates = (await r.json()).releaseDates || [];
+    const parsed = [];
+    for (const rd of dates) {
+      const pd = rd.releaseDate || {};
+      const y = pd.year, mo = pd.month || 1, d = pd.day || 1;
+      if (y) {
+        try {
+          const dt = new Date(y, mo - 1, d);
+          const cc = (rd.country || {}).code || "";
+          parsed.push({ dt, cc });
+        } catch {}
+      }
+    }
+    if (!parsed.length) return null;
+    const india  = parsed.filter(x => x.cc === "IN").map(x => x.dt);
+    const chosen = india.length ? new Date(Math.min(...india)) : new Date(Math.min(...parsed.map(x => x.dt)));
+    return chosen.toISOString().replace(/\.\d{3}Z$/, ".000Z");
+  } catch { return null; }
+}
+
+async function iapiAwards(imdbId) {
+  const r = await apiGet(`${IAPI_BASE}/titles/${imdbId}/awardNominations?pageSize=1`);
+  if (!r || r.status !== 200) return "";
+  try {
+    const stats = (await r.json()).stats || {};
+    const wins = stats.winCount || 0, noms = stats.nominationCount || 0;
+    if (!wins && !noms) return "";
+    const parts = [];
+    if (wins) parts.push(`${wins} win${wins !== 1 ? "s" : ""}`);
+    if (noms) parts.push(`${noms} nomination${noms !== 1 ? "s" : ""}`);
+    return parts.join(" & ");
+  } catch { return ""; }
+}
+
+async function iapiGetAKAs(imdbId) {
+  // Fetches India-specific alternate titles — catches Hindi dub names
+  // that differ from the original language IMDB primaryTitle
+  const r = await apiGet(`${IAPI_BASE}/titles/${imdbId}/akas`);
+  if (!r || r.status !== 200) return [];
+  try {
+    const json = await r.json();
+    return (json.akas || [])
+      .filter(a => a.country?.code === "IN" || a.country?.name === "India")
+      .map(a => a.text)
+      .filter(Boolean);
+  } catch { return []; }
+}
+
+// ── TMDB helpers ──────────────────────────────────────────────────
+async function tmdbSearch(query, year, apiKey) {
+  if (!apiKey) return [];
+  const params = new URLSearchParams({ api_key: apiKey, query, language: "en-US" });
+  if (year) params.set("year", year);
+  const r = await apiGet(`${TMDB_BASE}/search/movie?${params}`);
+  if (!r || r.status !== 200) return [];
+  try { return (await r.json()).results || []; } catch { return []; }
+}
+
+async function tmdbToImdb(tmdbId, apiKey) {
+  const r = await apiGet(`${TMDB_BASE}/movie/${tmdbId}/external_ids?api_key=${apiKey}`);
+  if (!r || r.status !== 200) return null;
+  try { return (await r.json()).imdb_id || null; } catch { return null; }
+}
+
+async function tmdbGetAKAs(tmdbId, apiKey) {
+  // TMDB equivalent of imdbapi AKA deep pass
+  const r = await apiGet(`${TMDB_BASE}/movie/${tmdbId}/alternative_titles?api_key=${apiKey}`);
+  if (!r || r.status !== 200) return [];
+  try {
+    return ((await r.json()).titles || [])
+      .filter(t => t.iso_3166_1 === "IN")
+      .map(t => t.title)
+      .filter(Boolean);
+  } catch { return []; }
+}
+
+async function tmdbFindByImdb(imdbId, apiKey) {
+  if (!apiKey) return null;
+  const r = await apiGet(`${TMDB_BASE}/find/${imdbId}?api_key=${apiKey}&external_source=imdb_id`);
+  if (!r || r.status !== 200) return null;
+  try { return (await r.json()).movie_results?.[0] || null; } catch { return null; }
+}
+
+async function tmdbVideos(tmdbId, apiKey) {
+  if (!apiKey) return [];
+  const r = await apiGet(`${TMDB_BASE}/movie/${tmdbId}/videos?api_key=${apiKey}`);
+  if (!r || r.status !== 200) return [];
+  try {
+    return (await r.json()).results
+      .filter(v => v.site === "YouTube" && ["Trailer", "Teaser"].includes(v.type));
+  } catch { return []; }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 14. AKA-AWARE RESULT MATCHERS
+// ═══════════════════════════════════════════════════════════════════
+async function bestMatchFromResults(query, year, results, noYear = false) {
+  const movies = results.filter(x => {
+    const t = (x.type || x.titleType || "").toLowerCase();
+    return !t.includes("series") && !t.includes("episode");
+  });
+
+  let bestId = null, bestConf = 0;
+
+  for (const x of movies) {
+    const imdbId = x.id || x.imdb_id;
+    if (!imdbId) continue;
+
+    const ry = x.startYear ? String(x.startYear) : (x.release_date || "").slice(0, 4);
+
+    // Score against all available title fields
+    const candidates = new Set([
+      x.primaryTitle, x.title, x.originalTitle, x.original_title,
+    ].filter(Boolean));
+
+    let highestConf = 0;
+    for (const pt of candidates) {
+      const conf = calcConfidence(query, pt, year, ry, noYear);
+      if (conf > highestConf) highestConf = conf;
+    }
+
+    // AKA Deep Pass — fetch India alternate titles when year is close
+    // but title score hasn't cleared the threshold yet.
+    // δ≤4 covers real dubbing delays (Jallikattu δ3, Kantara δ3, KGF δ3 all safe).
+    const yearDelta = (year && ry) ? Math.abs(parseInt(year) - parseInt(ry)) : 0;
+    if (yearDelta <= 4 && highestConf < ACCEPT_THRESHOLD && imdbId.startsWith("tt")) {
+      const akas = await iapiGetAKAs(imdbId);
+      for (const aka of akas) {
+        const conf = calcConfidence(query, aka, year, ry, noYear);
+        if (conf > highestConf) highestConf = conf;
+      }
+    }
+
+    if (highestConf > bestConf) { bestConf = highestConf; bestId = imdbId; }
+  }
+
+  return bestConf >= ACCEPT_THRESHOLD ? bestId : null;
+}
+
+async function tmdbBestMatch(query, year, results, apiKey, noYear = false) {
+  let bestConf = 0, bestResult = null;
+  for (const x of results) {
+    const rt   = x.title || x.original_title || "";
+    const ry   = (x.release_date || "").slice(0, 4);
+    const conf = calcConfidence(query, rt, year, ry, noYear);
+    if (conf > bestConf) { bestConf = conf; bestResult = x; }
+  }
+
+  // TMDB AKA Deep Pass — mirrors imdbapi AKA logic for TMDB results
+  if (bestResult && bestConf < ACCEPT_THRESHOLD) {
+    const ry       = (bestResult.release_date || "").slice(0, 4);
+    const yearDelta = (year && ry) ? Math.abs(parseInt(year) - parseInt(ry)) : 0;
+    if (yearDelta <= 4 && apiKey) {
+      const akas = await tmdbGetAKAs(bestResult.id, apiKey);
+      for (const aka of akas) {
+        const conf = calcConfidence(query, aka, year, ry, noYear);
+        if (conf > bestConf) bestConf = conf;
+      }
+    }
+  }
+
+  if (bestConf >= ACCEPT_THRESHOLD && bestResult) {
+    return await tmdbToImdb(bestResult.id, apiKey);
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 15. 8-PASS SEARCH ENGINE
+// ═══════════════════════════════════════════════════════════════════
+async function searchMovie(variants, year, env) {
+  const tmdbKey = env.TMDB_API_KEY || null;
+  const v0      = variants[0];
+  const v1      = variants[1] || null;
+  const vRest   = variants.slice(2, 5);
+
+  // P1 — imdbapi + primary variant + year in query string
+  let res = await iapiSearch(v0, year);
+  let id  = await bestMatchFromResults(v0, year, res);
+  if (id) return { id, pass: "P1" };
+
+  // P2 — imdbapi + secondary variant + year
+  if (v1) {
+    res = await iapiSearch(v1, year);
+    id  = await bestMatchFromResults(v1, year, res);
+    if (id) return { id, pass: "P2" };
+  }
+
+  // P3 — imdbapi + remaining variants + year
+  for (let i = 0; i < vRest.length; i++) {
+    res = await iapiSearch(vRest[i], year);
+    id  = await bestMatchFromResults(vRest[i], year, res);
+    if (id) return { id, pass: `P3-${i+1}` };
+  }
+
+  // P4 — imdbapi + primary variant + NO year (wider net, stricter sim)
+  if (year) {
+    res = await iapiSearch(v0);
+    id  = await bestMatchFromResults(v0, year, res, true);
+    if (id) return { id, pass: "P4" };
+  }
+
+  // P5 — imdbapi + secondary variant + NO year
+  if (v1 && year) {
+    res = await iapiSearch(v1);
+    id  = await bestMatchFromResults(v1, year, res, true);
+    if (id) return { id, pass: "P5" };
+  }
+
+  if (!tmdbKey) return null;
+
+  // P6 — TMDB + primary + year (with TMDB AKA deep pass)
+  res = await tmdbSearch(v0, year, tmdbKey);
+  id  = await tmdbBestMatch(v0, year, res, tmdbKey);
+  if (id) return { id, pass: "P6" };
+
+  // P7 — TMDB + secondary + year
+  if (v1) {
+    res = await tmdbSearch(v1, year, tmdbKey);
+    id  = await tmdbBestMatch(v1, year, res, tmdbKey);
+    if (id) return { id, pass: "P7" };
+  }
+
+  // P8 — TMDB + primary + NO year (last resort)
+  res = await tmdbSearch(v0, null, tmdbKey);
+  id  = await tmdbBestMatch(v0, year, res, tmdbKey, true);
+  if (id) return { id, pass: "P8" };
+
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 16. FULL META BUILDER (Stremio-compatible schema)
+// ═══════════════════════════════════════════════════════════════════
+function parseIapiTitle(d) {
+  if (!d) return {};
+  const rt     = d.runtimeSeconds || 0;
+  const rating = d.rating || {};
+  const ctries = d.originCountries || [];
+  return {
+    imdb_id:     d.id || "",
+    name:        d.primaryTitle || "",
+    year:        d.startYear ? String(d.startYear) : "",
+    description: d.plot || "",
+    genres:      d.genres || [],
+    imdbRating:  rating.aggregateRating ? String(Math.round(rating.aggregateRating * 10) / 10) : "",
+    runtime:     rt ? `${Math.floor(rt / 60)} min` : "",
+    cast:        (d.stars     || []).map(s => s.displayName).filter(Boolean),
+    director:    (d.directors || []).map(x => x.displayName).filter(Boolean),
+    writer:      (d.writers   || []).map(w => w.displayName).filter(Boolean),
+    country:     ctries[0]?.name || "",
+  };
+}
+
+function buildLinks(meta) {
+  const links = [];
+  const enc   = s => encodeURIComponent(String(s));
+  const { imdb_id: iid, name, slug, imdbRating, genres = [], cast = [], writer = [], director = [] } = meta;
+  if (iid && imdbRating) links.push({ name: imdbRating, category: "imdb",      url: `https://imdb.com/title/${iid}` });
+  if (slug)              links.push({ name,             category: "share",     url: `https://www.strem.io/s/${slug}` });
+  for (const g of genres)   links.push({ name: g, category: "Genres",    url: `stremio:///discover/https%3A%2F%2Fv3-cinemeta.strem.io%2Fmanifest.json/movie/top?genre=${enc(g)}` });
+  for (const c of cast)     links.push({ name: c, category: "Cast",      url: `stremio:///search?search=${enc(c)}` });
+  for (const w of writer)   links.push({ name: w, category: "Writers",   url: `stremio:///search?search=${enc(w)}` });
+  for (const d of director) links.push({ name: d, category: "Directors", url: `stremio:///search?search=${enc(d)}` });
+  return links;
+}
+
+async function fetchFullMeta(rawTitle, imdbId, env) {
+  const tmdbKey = env.TMDB_API_KEY || null;
+
+  const [fullData, released, awards] = await Promise.all([
+    iapiGetTitle(imdbId),
+    iapiReleaseDate(imdbId),
+    iapiAwards(imdbId),
+  ]);
+
+  const idata  = parseIapiTitle(fullData);
+  const tmdb   = tmdbKey ? await tmdbFindByImdb(imdbId, tmdbKey) : null;
+  const videos = (tmdb && tmdbKey) ? await tmdbVideos(tmdb.id, tmdbKey) : [];
+
+  const name    = idata.name  || rawTitle;
+  const year    = idata.year  || "";
+  const tmdbId  = tmdb?.id   || null;
+  const tmdbPop = tmdb?.popularity || 0;
+  const pop     = Math.round(tmdbPop / 100 * 1e8) / 1e8;
+
+  const slugName = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const numId    = imdbId.replace("tt", "");
+  const slug     = `movie/${slugName}-${numId}`;
+
+  const trailers      = videos.slice(0, 2).filter(v => v.key).map(v => ({ source: v.key, type: v.type }));
+  const trailerStreams = videos.slice(0, 2).filter(v => v.key).map(v => ({ title: name, ytId: v.key }));
+  const releasedStr   = released || (year ? `${year}-01-01T00:00:00.000Z` : undefined);
+
+  const meta = {
+    id:           imdbId,
+    imdb_id:      imdbId,
+    name,
+    type:         "movie",
+    year,
+    releaseInfo:  year,
+    description:  idata.description || "",
+    country:      idata.country     || "",
+    cast:         idata.cast        || [],
+    director:     idata.director    || [],
+    writer:       idata.writer      || [],
+    genre:        idata.genres      || [],
+    genres:       idata.genres      || [],
+    imdbRating:   idata.imdbRating  || "",
+    runtime:      idata.runtime     || "",
+    awards:       awards            || "",
+    poster:       `https://images.metahub.space/poster/small/${imdbId}/img`,
+    background:   `https://images.metahub.space/background/medium/${imdbId}/img`,
+    logo:         `https://images.metahub.space/logo/medium/${imdbId}/img`,
+    slug,
+    popularity:   pop,
+    popularities: { moviedb: tmdbPop, stremio: pop, stremio_lib: 0 },
+    trailers,
+    trailerStreams,
+    videos:        [],
+    behaviorHints: { defaultVideoId: imdbId, hasScheduledVideos: false },
+    ...(releasedStr ? { released: releasedStr, dvdRelease: releasedStr } : {}),
+    ...(tmdbId      ? { moviedb_id: tmdbId } : {}),
+  };
+  meta.links = buildLinks(meta);
+  return meta;
+}
