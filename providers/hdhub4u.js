@@ -205,8 +205,9 @@ function calcTitleSim(query, candidate) {
   const q = norm(query), c = norm(candidate);
   if (!q || !c)
     return 0;
-  if (c.includes(q))
-    return 0.95;
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (new RegExp(`^${escaped}\\b`).test(c)) return 0.95;
+  if (new RegExp(`\\b${escaped}\\b`).test(c)) return 0.72;
   return Math.max(seqRatio(q, c), jaccardWords(q, c));
 }
 function parseSize(str) {
@@ -1204,7 +1205,13 @@ function performSingleSearch(query) {
 function performParallelSearch(queries, year) {
   console.log("[Search] Queue:", queries);
   return __async(this, null, function* () {
-    const allResults = yield Promise.all(queries.map((q) => performSingleSearch(q)));
+    // Append year to each query so Pingora (sorted date desc) surfaces the
+    // correct year's post instead of a same-keyword newer post.
+    // e.g. "Kill" + "2024" -> "Kill 2024" so "Kill (2024)..." ranks above "The Things You Kill (2025)..."
+    const searchQueries = year
+      ? queries.map((q) => q.includes(year) ? q : q + " " + year)
+      : queries;
+    const allResults = yield Promise.all(searchQueries.map((q) => performSingleSearch(q)));
     const scored = [];
     for (let i = 0; i < allResults.length; i++) {
       for (const r of allResults[i]) {
@@ -1518,6 +1525,18 @@ function getStreams(tmdbId, mediaType, season, episode) {
           }
           if (searchQueue.length === 0)
             searchQueue.push(updatedTitle2);
+ 
+          // FIX 2: For sequel titles like "Pushpa: The Rule - Part 2", also add a
+          // shortened "Franchise N" variant (e.g. "Pushpa 2") because HDHub4u
+          // reorders the number to right after the franchise name.
+          const titleForVariant = updatedTitle2 || displayTitle;
+          const partNumberMatch = titleForVariant.match(/^([^:\-–]+).*?(?:Part|Pt\.?)\s*(\d+)\s*$/i);
+          if (partNumberMatch) {
+            const shortVariant = `${partNumberMatch[1].trim()} ${partNumberMatch[2]}`;
+            console.log("[HDHub4u] Adding sequel short variant:", shortVariant);
+            if (!searchQueue.includes(shortVariant))
+              searchQueue.push(shortVariant);
+          }
           const { results: searchResults, usedTitle: usedTitleForMatch } = yield performParallelSearch(searchQueue, year);
           if (searchResults.length === 0) {
             console.log("[HDHub4u] No search results - NOT caching empty result");
