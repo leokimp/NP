@@ -583,8 +583,17 @@ function verifyStreamUrl(url) {
     }
   });
 }
+// Module-level cache: prevents same URL being resolved in parallel by multiple
+// hubcloud/hubdrive paths that all point to the same file.
+const resolvedUrlCache = new Map();
+
 function resolveRedirectChain(url, maxHops = 10) {
   return __async2(this, null, function* () {
+    if (resolvedUrlCache.has(url)) {
+      const cached = resolvedUrlCache.get(url);
+      console.log("[RESOLVE] Cache hit:", url.substring(0, 60), "->", cached ? cached.substring(0, 60) : "null");
+      return cached;
+    }
     console.log("[RESOLVE] Starting redirect resolution for:", url);
     let currentUrl = url;
     let hopCount = 0;
@@ -599,7 +608,75 @@ function resolveRedirectChain(url, maxHops = 10) {
     ];
     while (hopCount < maxHops) {
       console.log(`[RESOLVE] Hop ${hopCount + 1}:`, currentUrl);
+      console.log(`[RESOLVE] Hop ${hopCount + 1}:`, currentUrl);
       if (currentUrl.includes("pixel.hubcdn.fans")) {
+        // pixel.hubcdn.fans hides the real CDN URL using s('o',...) encryption.
+        // Try to fetch & decrypt. If the domain is network-blocked (common in
+        // mobile environments), return null immediately so the caller can fall
+        // through to the next link (e.g. Pixeldrain) instead of wasting time
+        // on the equally-dead gpdl.hubcdn.fans → rohitkiskk chain.
+        let pixelNetworkBlocked = false;
+        try {
+          // Stream only the first 32KB — s('o',...) is always in the <head>.
+          // arrayBuffer()/text() both download the ENTIRE body before returning,
+          // which crashes Node.js on huge pages ("string too large").
+          // Using the body ReadableStream reader lets us stop after 32KB.
+          const pixelResponse = yield fetchWithRetry(currentUrl);
+          const MAX_PIXEL_BYTES = 32768;
+          let pixelHtml = "";
+          if (pixelResponse.body && pixelResponse.body.getReader) {
+            const reader = pixelResponse.body.getReader();
+            const decoder = new TextDecoder();
+            let bytesRead = 0;
+            try {
+              while (bytesRead < MAX_PIXEL_BYTES) {
+                const { done, value } = yield reader.read();
+                if (done) break;
+                pixelHtml += decoder.decode(value, { stream: true });
+                bytesRead += value.length;
+              }
+            } finally {
+              reader.cancel();
+            }
+          } else {
+            // Fallback for environments without ReadableStream
+            const buf = yield pixelResponse.arrayBuffer();
+            pixelHtml = new TextDecoder().decode(new Uint8Array(buf).slice(0, MAX_PIXEL_BYTES));
+          }
+          const soRe = /s\('o','([A-Za-z0-9+\/=]+)'\)|ck\('_wp_http_\d+','([^']+)'/g;
+          let combined = "";
+          let sm;
+          while ((sm = soRe.exec(pixelHtml)) !== null) {
+            const v = sm[1] || sm[2];
+            if (v) combined += v;
+          }
+          if (combined) {
+            const decoded = safeAtob(rot13(safeAtob(safeAtob(combined))));
+            const jsonObj = JSON.parse(decoded);
+            const directUrl = safeAtob(jsonObj.o || "").trim();
+            if (directUrl && directUrl.startsWith("http")) {
+              console.log("[RESOLVE] Decrypted direct URL from pixel.hubcdn.fans s('o',...):", directUrl);
+              resolvedUrlCache.set(url, directUrl);
+              return directUrl;
+            }
+          }
+          // Page loaded but no s('o',...) found — fall through to gpdl swap
+        } catch (e) {
+          const isNetworkError = e.message && (
+            e.message.includes("Network request failed") ||
+            e.message.includes("network") ||
+            e.message.includes("fetch") ||
+            e.message.includes("ECONNREFUSED") ||
+            e.message.includes("ENOTFOUND")
+          );
+          if (isNetworkError) {
+            console.log("[RESOLVE] pixel.hubcdn.fans is network-blocked — skipping gpdl chain, returning null");
+      resolvedUrlCache.set(url, null);
+      return null;
+          }
+          console.log("[RESOLVE] pixel.hubcdn.fans decrypt failed, falling back to gpdl swap:", e.message);
+        }
+        // Fallback: gpdl swap (only if page was reachable but decrypt failed)
         console.log("[RESOLVE] Swapping pixel.hubcdn.fans \u2192 gpdl.hubcdn.fans");
         currentUrl = currentUrl.replace("pixel.hubcdn.fans", "gpdl.hubcdn.fans");
         console.log("[RESOLVE] Swapped URL:", currentUrl);
@@ -620,7 +697,8 @@ function resolveRedirectChain(url, maxHops = 10) {
       }
       if (isDirectLink(currentUrl)) {
         console.log("[RESOLVE] Found direct link!");
-        return currentUrl;
+              resolvedUrlCache.set(url, currentUrl);
+              return currentUrl;
       }
       try {
         const response = yield fetch(currentUrl, {
@@ -745,19 +823,22 @@ function resolveRedirectChain(url, maxHops = 10) {
           console.log("[RESOLVE] No more redirects found on this page");
           if (isRedirectLink(currentUrl)) {
             console.log("[RESOLVE] WARNING: Stopped on redirect link \u2014 returning null");
-            return null;
+      resolvedUrlCache.set(url, null);
+      return null;
           }
           const finalVerified = yield verifyStreamUrl(currentUrl);
           if (finalVerified)
             return currentUrl;
           console.log("[RESOLVE] Final URL failed stream verification \u2014 returning null");
-          return null;
+      resolvedUrlCache.set(url, null);
+      return null;
         }
         const edgeVerified = yield verifyStreamUrl(currentUrl);
         if (edgeVerified)
           return currentUrl;
         console.log("[RESOLVE] Unexpected content-type, URL failed verification \u2014 returning null");
-        return null;
+      resolvedUrlCache.set(url, null);
+      return null;
       } catch (err) {
         console.log("[RESOLVE] Fetch error:", err.message, "\u2014 returning null");
         return null;
@@ -772,7 +853,8 @@ function resolveRedirectChain(url, maxHops = 10) {
     if (lastVerified)
       return currentUrl;
     console.log("[RESOLVE] Max hops URL failed stream verification \u2014 returning null");
-    return null;
+      resolvedUrlCache.set(url, null);
+      return null;
   });
 }
 function getRedirectLinks(url) {
@@ -896,6 +978,34 @@ function hubCloudExtractor(url, referer) {
       const qualityMatch = header.match(/(\d{3,4})p/);
       const quality = qualityMatch ? qualityMatch[0] : "Unknown";
       console.log("[HUBCLOUD] Size:", sizeText, "Quality:", quality);
+      // Try to decrypt the direct CDN URL from s('o','...') in the page JS.
+      // gamerxyt.com/hubcloud.php embeds the real URL using the same rot13+base64
+      // encryption as gadgetsweb.xyz — extracting it skips the failing
+      // pixel.hubcdn.fans → gpdl.rohitkiskk.workers.dev redirect chain.
+      try {
+        const soRegex = /s\('o','([A-Za-z0-9+\/=]+)'\)|ck\('_wp_http_\d+','([^']+)'/g;
+        let combinedSo = "";
+        let soMatch;
+        while ((soMatch = soRegex.exec(html)) !== null) {
+          const v = soMatch[1] || soMatch[2];
+          if (v) combinedSo += v;
+        }
+        if (combinedSo) {
+          const decoded = safeAtob(rot13(safeAtob(safeAtob(combinedSo))));
+          const jsonObj = JSON.parse(decoded);
+          const directUrl = safeAtob(jsonObj.o || "").trim();
+          if (directUrl && directUrl.startsWith("http")) {
+            console.log("[HUBCLOUD] Decrypted direct URL from s(\'o\',...) \u2014 skipping redirect chain");
+            const verified = yield verifyStreamUrl(directUrl);
+            if (verified) {
+              console.log("[HUBCLOUD] \u2705 Direct decrypted stream confirmed:", directUrl);
+              return [{ source: "HubCloud [Direct]", quality, url: directUrl, size: sizeBytes }];
+            }
+          }
+        }
+      } catch (e) {
+        console.log("[HUBCLOUD] s(\'o\',...) decrypt failed, falling back to link extraction:", e.message);
+      }
       const links = extractAllLinks(html);
       const results = [];
       for (const link of links) {
@@ -1202,13 +1312,12 @@ function performSingleSearch(query) {
     }
   });
 }
-function performParallelSearch(queries, year) {
+function performParallelSearch(queries, year, mediaType) {
   console.log("[Search] Queue:", queries);
   return __async(this, null, function* () {
-    // Append year to each query so Pingora (sorted date desc) surfaces the
-    // correct year's post instead of a same-keyword newer post.
-    // e.g. "Kill" + "2024" -> "Kill 2024" so "Kill (2024)..." ranks above "The Things You Kill (2025)..."
-    const searchQueries = year
+    // Send year-decorated query to Pingora so the correct year's post appears
+    // in the 10-result window (e.g. "Kill 2024" instead of just "Kill")
+    const searchQueries = (year && mediaType === "movie")
       ? queries.map((q) => q.includes(year) ? q : q + " " + year)
       : queries;
     const allResults = yield Promise.all(searchQueries.map((q) => performSingleSearch(q)));
@@ -1537,7 +1646,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             if (!searchQueue.includes(shortVariant))
               searchQueue.push(shortVariant);
           }
-          const { results: searchResults, usedTitle: usedTitleForMatch } = yield performParallelSearch(searchQueue, year);
+          const { results: searchResults, usedTitle: usedTitleForMatch } = yield performParallelSearch(searchQueue, year, mediaType);
           if (searchResults.length === 0) {
             console.log("[HDHub4u] No search results - NOT caching empty result");
             return { nativeStreams: [], updatedTitle: updatedTitle2 };
@@ -1554,7 +1663,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
           }
           console.log("[HDHub4u] Found Page:", bestMatch.title);
           const pageHtml = yield fetchText(bestMatch.url);
-          const linksToProcess = extractLinks(pageHtml, mediaType, season, episode);
+          const rawLinks = extractLinks(pageHtml, mediaType, season, episode);
+          // Deduplicate input links so the same hubcloud/hubdrive URL is not
+          // processed multiple times by different extractors (avoids duplicate streams)
+          const linksToProcess = [...new Set(rawLinks)];
           console.log(`[HDHub4u] Found ${linksToProcess.length} candidate links`);
           const extractedResults = yield extractLinksInParallel(linksToProcess, bestMatch.url);
           const nativeStreams2 = [];
@@ -1597,7 +1709,23 @@ function getStreams(tmdbId, mediaType, season, episode) {
           });
         });
       }
-      const sortedStreams = finalStreams.sort((a, b) => {
+      // Deduplicate final streams by URL — multiple extraction paths
+      // (hubdrive → hubcloud, hblinks → hubcloud) can resolve to the same CDN URL.
+      // Keep first occurrence (highest quality comes first after resolution).
+      const seenUrls = new Set();
+      const dedupedStreams = finalStreams.filter((s) => {
+        // Normalise the URL slightly: strip token params that differ per-request
+        // but point to the same file (e.g. r2.dev/hash?token=xxx)
+        const baseUrl = s.url.split("?")[0];
+        if (seenUrls.has(baseUrl)) {
+          console.log("[HDHub4u] Dedup: skipping duplicate URL:", baseUrl.substring(0, 80));
+          return false;
+        }
+        seenUrls.add(baseUrl);
+        return true;
+      });
+      console.log(`[HDHub4u] Streams after dedup: ${dedupedStreams.length} (was ${finalStreams.length})`);
+      const sortedStreams = dedupedStreams.sort((a, b) => {
         const qOrder = { "2160p": 10, "4k": 10, "1080p": 8 };
         const aCleanName = a.name.toLowerCase().replace(/\./g, "").trim();
         const bCleanName = b.name.toLowerCase().replace(/\./g, "").trim();
