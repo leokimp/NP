@@ -559,7 +559,7 @@ function fetchMoreEpisodes(contentId, seasonId, platform, cookie, startPage) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function getVideoToken(contentId, cookie, ott) {
-  var jar = makeCookieString({ t_hash_t: cookie, ott: ott || 'nf', hd: 'on' });
+  var jar = makeCookieString({ t_hash_t: cookie, user_token: '233123f803cf02184bf6c67e149cdd50', ott: ott || 'nf', hd: 'on' });
   return request(NETMIRROR_BASE + '/play.php', {
     method  : 'POST',
     headers : {
@@ -603,7 +603,7 @@ function getVideoToken(contentId, cookie, ott) {
 
 function getPlaylist(contentId, title, platform, cookie, token) {
   var ott = PLATFORM_OTT[platform];
-  var jar = makeCookieString({ t_hash_t: cookie, ott: ott, hd: 'on' });
+  var jar = makeCookieString({ t_hash_t: cookie, user_token: '233123f803cf02184bf6c67e149cdd50', ott: ott, hd: 'on' });
   var url = PLAYLIST_ENDPOINT[platform]
     + '?id='  + contentId
     + '&t='   + encodeURIComponent(title)
