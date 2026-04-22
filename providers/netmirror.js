@@ -688,7 +688,7 @@ function buildStream(source, platform, resolved, content, episodeData) {
     name    : platLabel + ' | ' + quality,
     title   : lines.join('\n'),
     url     : source.url,
-    quality : quality,
+    _quality : quality,
     type    : 'hls',
     headers : {
       'User-Agent'      : 'Mozilla/5.0 (Android) ExoPlayer',
@@ -758,7 +758,7 @@ function loadPlatformContent(platform, hit, resolved, season, episode, cookie) {
                   return true;
                 })
                 .map(function (src) { return buildStream(src, platform, resolved, content, episodeObj); })
-                .sort(function (a, b) { return qualitySortScore(b.quality) - qualitySortScore(a.quality); });
+                .sort(function (a, b) { return qualitySortScore(b._quality) - qualitySortScore(a._quality); });
 
               console.log(PLUGIN_TAG + ' + ' + streams.length + ' stream(s) from ' + PLATFORM_LABEL[platform]);
               return streams;
