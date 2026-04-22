@@ -1,13 +1,15 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════════════════╗
- * ║               NetMirror — Nuvio Mobile Plugin  v4.0                          ║
+ * ║               NetMirror — Nuvio Mobile Plugin  v4.0                         ║
  * ╠══════════════════════════════════════════════════════════════════════════════╣
- * ║  Source     › https://net22.cc  /  https://net52.cc                          ║
+ * ║  Source     › https://net22.cc  /  https://net52.cc                         ║
+ * ║  Author     › Sanchit  |  TG: @S4NCHITT                                     ║
+ * ║  Project    › Murph's Streams                                                ║
  * ╠══════════════════════════════════════════════════════════════════════════════╣
  * ║  Platforms  › Netflix · Prime Video · Disney+                                ║
- * ║  Supports   › Movies & Series  (480p / 720p / 1080p / Auto)                  ║
- * ║  Engine     › CJS / Hermes (Nuvio Mobile compatible)                         ║
- * ║  Search     › cloudscraper resolveIds + IMDb AKAs + Pingora-style scoring    ║
+ * ║  Supports   › Movies & Series  (480p / 720p / 1080p / Auto)                 ║
+ * ║  Engine     › CJS / Hermes (Nuvio Mobile compatible)                        ║
+ * ║  Search     › cloudscraper resolveIds + IMDb AKAs + Pingora-style scoring   ║
  * ╚══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -688,7 +690,6 @@ function buildStream(source, platform, resolved, content, episodeData) {
     name    : platLabel + ' | ' + quality,
     title   : lines.join('\n'),
     url     : source.url,
-    quality : quality,
     type    : 'hls',
     headers : {
       'User-Agent'      : 'Mozilla/5.0 (Android) ExoPlayer',
