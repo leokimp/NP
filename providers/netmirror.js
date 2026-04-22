@@ -574,7 +574,7 @@ function getVideoToken(contentId, cookie, ott) {
       var h = playData.h;
       if (!h) throw new Error('play.php step1: no h param');
       console.log(PLUGIN_TAG + ' Token step1 h=' + String(h).slice(0, 30) + '...');
-      return request(NETMIRROR_PLAY + '/play.php?id=' + contentId + '&' + h, {
+      return fetch(NETMIRROR_PLAY + '/play.php?id=' + contentId + '&' + h, {
         headers: {
           'Accept'                    : 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
           'Accept-Language'           : 'en-GB,en;q=0.9',
