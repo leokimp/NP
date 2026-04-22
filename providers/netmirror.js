@@ -681,13 +681,14 @@ function buildStream(source, platform, resolved, content, episodeData) {
     if (episodeData.t) titleLine += ' - ' + episodeData.t;
   }
 
-  var lines = [titleLine, quality];
+  var lines = [titleLine];
   if (langStr)         lines.push(langStr);
 
   return {
     name    : platLabel + ' | ' + quality,
     title   : lines.join('\n'),
     url     : source.url,
+    quality : quality,
     type    : 'hls',
     headers : {
       'User-Agent'      : 'Mozilla/5.0 (Android) ExoPlayer',
@@ -750,6 +751,12 @@ function loadPlatformContent(platform, hit, resolved, season, episode, cookie) {
               if (!playlist.sources.length) { console.log(PLUGIN_TAG + ' No sources'); return null; }
 
               var streams = playlist.sources
+                .filter(function(src) {
+                  var q = parseQuality(src).toLowerCase();
+                  // Drop 480p, 360p, and anything containing "low"
+                  if (q === '480p' || q === '360p' || q.indexOf('low') !== -1) return false;
+                  return true;
+                })
                 .map(function (src) { return buildStream(src, platform, resolved, content, episodeObj); })
                 .sort(function (a, b) { return qualitySortScore(b.quality) - qualitySortScore(a.quality); });
 
