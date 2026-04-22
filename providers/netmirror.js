@@ -248,30 +248,49 @@ function calcTitleSim(query, candidate) {
   var q = normTitle(query);
   var c = normTitle(candidate);
   if (!q || !c) return 0;
+  
+  // 1. Exact match gets an automatic 1.0 (Passes immediately)
+  if (q === c) return 1.0;
+
   var esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  if (new RegExp('^' + esc + '\\b').test(c)) return 0.95;
-  if (new RegExp('\\b' + esc + '\\b').test(c)) return 0.72;
-  return Math.max(seqRatio(q, c), jaccardWords(q, c));
+
+  // 2. Prefix match (e.g. "Kill" vs "Kill Blue")
+  if (new RegExp('^' + esc + '\\b').test(c)) {
+    return 0.65; // Base score is BELOW the 0.72 threshold!
+  }
+  
+  // 3. Contained match
+  if (new RegExp('\\b' + esc + '\\b').test(c)) {
+    return 0.60;
+  }
+  
+  // 4. Fuzzy fallback (heavily capped)
+  return Math.max(seqRatio(q, c), jaccardWords(q, c)) * 0.8;
 }
 
-// Score one (query, resultTitle) pair with year adjustment.
-// Returns final rankScore >= 0.72, or 0 if rejected.
-function scoreResult(query, resultTitle, year) {
+function scoreResult(query, resultTitle, targetYear, resultYear) {
   var titleScore = calcTitleSim(query, resultTitle);
-  if (titleScore < 0.62) return 0;
-
   var rankScore = titleScore;
-  if (year) {
-    var rYear = (resultTitle.match(/\b(19|20)\d{2}\b/) || [])[0];
-    if (rYear) {
-      var delta = Math.abs(parseInt(year) - parseInt(rYear));
-      if (delta === 0)    rankScore = Math.min(1, rankScore + 0.10);
-      else if (delta > 3) rankScore *= 0.70;
+
+  var rYear = resultYear || (resultTitle.match(/\b(19|20)\d{2}\b/) || [])[0];
+  
+  if (targetYear && rYear) {
+    var delta = Math.abs(parseInt(targetYear) - parseInt(rYear));
+    if (delta === 0) {
+      rankScore += 0.15; // Exact year bumps a failing 0.65 to a passing 0.80
+    } else if (delta === 1) {
+      rankScore += 0.05; // 1-year buffer bumps a 0.65 to 0.70 (Still fails unless it was an exact 1.0 title match)
+    } else {
+      rankScore -= 0.30; // Brutal penalty for wrong year
     }
+  } else if (targetYear && !rYear && titleScore < 1.0) {
+    // The "KILL BLUE" Rule: If TMDB wants a specific year, but the API gives no year,
+    // AND the title is not an exact match, penalize it so it stays dead.
+    rankScore -= 0.10;
   }
+  
   return rankScore >= 0.72 ? rankScore : 0;
 }
-
 // ─────────────────────────────────────────────────────────────────────────────
 // resolveIds — ported from cloudscraper.js
 //
@@ -416,7 +435,7 @@ function searchPlatform(searchQueue, year, platform, cookie, isTv) {
             if (!isTv && isItemSeries) return; // Skip TV shows when looking for Movies
           }
 
-          var rank = scoreResult(originalQuery, item.t, year);
+          var rank = scoreResult(originalQuery, item.t, year, item.y);
           if (rank > 0 && (!best || rank > best.score))
             best = { id: item.id, title: item.t, score: rank };
         });
@@ -653,8 +672,10 @@ function buildStream(source, platform, resolved, content, episodeData) {
   var platLabel = PLATFORM_LABEL[platform] || platform;
   var langStr   = formatLangs(content.langs);
 
-  var titleLine = resolved.title || content.title;
-  if (resolved.year || content.year) titleLine += ' (' + (resolved.year || content.year) + ')';
+  var titleLine = content.title || resolved.title;
+  var yearStr   = content.year || resolved.year;
+  if (yearStr) titleLine += ' (' + yearStr + ')';
+
   if (resolved.isTv && episodeData) {
     var sNum = String(episodeData.s  || episodeData.season  || episodeData.season_number  || '').replace(/\D/g, '');
     var eNum = String(episodeData.ep || episodeData.episode || episodeData.episode_number || '').replace(/\D/g, '');
@@ -662,10 +683,8 @@ function buildStream(source, platform, resolved, content, episodeData) {
     if (episodeData.t) titleLine += ' - ' + episodeData.t;
   }
 
-  var lines = [titleLine, quality + ' - HLS'];
+  var lines = [titleLine, quality];
   if (langStr)         lines.push(langStr);
-  if (content.runtime) lines.push(content.runtime);
-  lines.push("by Sanchit | @S4NCHITT | Murph's Streams");
 
   return {
     name    : platLabel + ' | ' + quality,
@@ -689,77 +708,63 @@ function buildStream(source, platform, resolved, content, episodeData) {
 // Platform Pipeline
 // ─────────────────────────────────────────────────────────────────────────────
 
-function tryPlatform(platform, resolved, season, episode, cookie) {
-  console.log(PLUGIN_TAG + ' Trying: ' + PLATFORM_LABEL[platform]);
+function loadPlatformContent(platform, hit, resolved, season, episode, cookie) {
+  console.log(PLUGIN_TAG + ' Extracting streams from: ' + PLATFORM_LABEL[platform]);
 
-  return searchPlatform(resolved.searchQueue, resolved.year, platform, cookie, resolved.isTv)
-    .then(function (hit) {
-      if (!hit) {
-        console.log(PLUGIN_TAG + ' Not found on ' + PLATFORM_LABEL[platform]);
-        return null;
-      }
+  return loadContent(hit.id, platform, cookie).then(function (content) {
+    var raw   = content._raw;
+    var chain = Promise.resolve();
 
-      return loadContent(hit.id, platform, cookie).then(function (content) {
-        var raw   = content._raw;
-        var chain = Promise.resolve();
+    if (raw.nextPageShow === 1 && raw.nextPageSeason)
+      chain = chain.then(function () {
+        return fetchMoreEpisodes(hit.id, raw.nextPageSeason, platform, cookie, 2)
+          .then(function (more) { content.episodes = content.episodes.concat(more); });
+      });
 
-        if (raw.nextPageShow === 1 && raw.nextPageSeason)
-          chain = chain.then(function () {
-            return fetchMoreEpisodes(hit.id, raw.nextPageSeason, platform, cookie, 2)
-              .then(function (more) { content.episodes = content.episodes.concat(more); });
-          });
-
-        if (Array.isArray(raw.season) && raw.season.length > 1) {
-          // --- DEBUG CODE START ---
-          console.log('[DEBUG] Original raw.season length:', raw.season.length);
-          var slicedSeasons = raw.season.slice(0, -1);
-          console.log('[DEBUG] Sliced seasons to fetch:', JSON.stringify(slicedSeasons.map(function(s) { return s.id || s; })));
-          // --- DEBUG CODE END ---
-
-          slicedSeasons.forEach(function (s) {
-            chain = chain.then(function () {
-              return fetchMoreEpisodes(hit.id, s.id, platform, cookie, 1)
-                .then(function (more) { content.episodes = content.episodes.concat(more); });
-            });
-          });
-        }
-
-        return chain.then(function () {
-          var targetId = hit.id, episodeObj = null;
-
-          if (resolved.isTv) {
-            episodeObj = findEpisode(content.episodes, season || 1, episode || 1);
-            if (!episodeObj) {
-              console.log(PLUGIN_TAG + ' S' + season + 'E' + episode + ' not found on ' + PLATFORM_LABEL[platform]);
-              return null;
-            }
-            targetId = episodeObj.id;
-            console.log(PLUGIN_TAG + ' Episode ID: ' + targetId);
-          }
-
-          return getVideoToken(targetId, cookie, PLATFORM_OTT[platform])
-            .then(function (token) {
-              if (!token) { console.log(PLUGIN_TAG + ' No token'); return null; }
-
-              return getPlaylist(targetId, resolved.title, platform, cookie, token)
-                .then(function (playlist) {
-                  if (!playlist.sources.length) { console.log(PLUGIN_TAG + ' No sources'); return null; }
-
-                  var streams = playlist.sources
-                    .map(function (src) { return buildStream(src, platform, resolved, content, episodeObj); })
-                    .sort(function (a, b) { return qualitySortScore(b.quality) - qualitySortScore(a.quality); });
-
-                  console.log(PLUGIN_TAG + ' + ' + streams.length + ' stream(s) from ' + PLATFORM_LABEL[platform]);
-                  return streams;
-                });
-            });
+    if (Array.isArray(raw.season) && raw.season.length > 1) {
+      var slicedSeasons = raw.season.slice(0, -1);
+      slicedSeasons.forEach(function (s) {
+        chain = chain.then(function () {
+          return fetchMoreEpisodes(hit.id, s.id, platform, cookie, 1)
+            .then(function (more) { content.episodes = content.episodes.concat(more); });
         });
       });
-    })
-    .catch(function (err) {
-      console.log(PLUGIN_TAG + ' Error on ' + PLATFORM_LABEL[platform] + ': ' + err.message);
-      return null;
+    }
+
+    return chain.then(function () {
+      var targetId = hit.id, episodeObj = null;
+
+      if (resolved.isTv) {
+        episodeObj = findEpisode(content.episodes, season || 1, episode || 1);
+        if (!episodeObj) {
+          console.log(PLUGIN_TAG + ' S' + season + 'E' + episode + ' not found on ' + PLATFORM_LABEL[platform]);
+          return null;
+        }
+        targetId = episodeObj.id;
+        console.log(PLUGIN_TAG + ' Episode ID: ' + targetId);
+      }
+
+      return getVideoToken(targetId, cookie, PLATFORM_OTT[platform])
+        .then(function (token) {
+          if (!token) { console.log(PLUGIN_TAG + ' No token'); return null; }
+
+          return getPlaylist(targetId, resolved.title, platform, cookie, token)
+            .then(function (playlist) {
+              if (!playlist.sources.length) { console.log(PLUGIN_TAG + ' No sources'); return null; }
+
+              var streams = playlist.sources
+                .map(function (src) { return buildStream(src, platform, resolved, content, episodeObj); })
+                .sort(function (a, b) { return qualitySortScore(b.quality) - qualitySortScore(a.quality); });
+
+              console.log(PLUGIN_TAG + ' + ' + streams.length + ' stream(s) from ' + PLATFORM_LABEL[platform]);
+              return streams;
+            });
+        });
     });
+  }).catch(function (err) {
+    console.log(PLUGIN_TAG + ' Error loading ' + PLATFORM_LABEL[platform] + ': ' + err.message);
+    return null;
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -774,7 +779,7 @@ function getStreams(tmdbId, type, season, episode) {
 
     console.log(PLUGIN_TAG + ' ID: ' + tmdbId + ' type: ' + type + (s ? ' S' + s + 'E' + e : ''));
 
-    // Step 1: resolve IDs + build search queue (one-shot, from cloudscraper)
+    // Step 1: resolve IDs + build search queue
     var resolved = yield resolveIds(tmdbId, type);
 
     if (!resolved.title) {
@@ -785,27 +790,58 @@ function getStreams(tmdbId, type, season, episode) {
     // Step 2: auth bypass
     var cookie = yield bypass();
 
-    // Step 3: platform priority heuristic
+    // Step 3: PARALLEL SEARCH
+    // We search all platforms simultaneously instead of waiting for one to fail.
     var platforms = ['netflix', 'primevideo', 'disney'];
-    var tl = resolved.title.toLowerCase();
-    if (tl.includes('prime') || tl.includes('boys') || tl.includes('jack ryan'))
-      platforms = ['primevideo', 'netflix', 'disney'];
-    else if (tl.includes('star wars') || tl.includes('marvel') || tl.includes('mandalorian') || tl.includes('pixar'))
-      platforms = ['disney', 'netflix', 'primevideo'];
+    console.log(PLUGIN_TAG + ' Initiating parallel search across all platforms...');
 
-    // Step 4: try platforms sequentially
-    function tryNext(i) {
-      if (i >= platforms.length) {
-        console.log(PLUGIN_TAG + ' No streams found on any platform.');
-        return Promise.resolve([]);
-      }
-      return tryPlatform(platforms[i], resolved, s, e, cookie)
-        .then(function (streams) {
-          if (streams && streams.length) return streams;
-          return tryNext(i + 1);
+    var searchPromises = platforms.map(function(plat) {
+      return searchPlatform(resolved.searchQueue, resolved.year, plat, cookie, resolved.isTv)
+        .then(function(hit) {
+          return { platform: plat, hit: hit };
         });
+    });
+
+    var searchResults = yield Promise.all(searchPromises);
+
+    // Step 4: FIND THE PERFECT MATCH
+    // Iterate through all results to find the highest score.
+    var maxScore = 0;
+    searchResults.forEach(function(res) {
+      if (res.hit && res.hit.score > maxScore) {
+        maxScore = res.hit.score;
+      }
+    });
+
+    if (maxScore === 0) {
+      console.log(PLUGIN_TAG + ' No valid matches found on any platform.');
+      return [];
     }
 
-    return yield tryNext(0);
+    // Filter down to ONLY the platform(s) that achieved this highest score.
+    // If Netflix and Prime both score 1.15, we load from both!
+
+    var threshold = maxScore >= 1.0 ? 1.0 : maxScore;
+    var winningResults = searchResults.filter(function(res) {
+      return res.hit && res.hit.score >= threshold;
+    });
+
+    console.log(PLUGIN_TAG + ' 🏆 Perfect Match found on ' + winningResults.length + ' platform(s) (Max Score: ' + maxScore.toFixed(3) + ')');
+
+    // Step 5: LOAD STREAMS FOR WINNERS
+    // Run the heavy playlist extraction ONLY for the winning platform(s)
+    var loadPromises = winningResults.map(function(res) {
+      return loadPlatformContent(res.platform, res.hit, resolved, s, e, cookie);
+    });
+
+    var streamArrays = yield Promise.all(loadPromises);
+    
+    // Flatten the results into a single array of streams
+    var finalStreams = [];
+    streamArrays.forEach(function(arr) {
+      if (arr && arr.length) finalStreams = finalStreams.concat(arr);
+    });
+
+    return finalStreams;
   });
 }
