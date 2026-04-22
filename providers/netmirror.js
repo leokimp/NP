@@ -626,8 +626,10 @@ function getPlaylist(contentId, title, platform, cookie, token) {
       var sources = [], subtitles = [];
       playlist.forEach(function (item) {
         (item.sources || []).forEach(function (src) {
-          var u = (src.file || '').replace(/^\/tv\//, '/');
-          if (u && !u.startsWith('http')) u = NETMIRROR_PLAY + (u.startsWith('/') ? '' : '/') + u;
+          var u = source.file || '';
+          u = u.replace('/tv/', '/');
+          if (!u.startsWith('/')) u = '/' + u;
+          u = NETMIRROR_PLAY + '/' + u.replace(/^\//, '');  // always domain + "/" + path (no double slash)
           if (u) sources.push({ url: u, quality: src.label || '', type: src.type || 'application/x-mpegURL' });
         });
         (item.tracks || []).filter(function (t) { return t.kind === 'captions'; }).forEach(function (track) {
