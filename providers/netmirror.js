@@ -64,7 +64,7 @@ var NETMIRROR_BASE  = 'https://net22.cc';
 var NETMIRROR_PLAY  = 'https://net52.cc';
 var PLUGIN_TAG      = '[NetMirror]';
 
-var COOKIE_EXPIRY_MS = 15 * 60 * 1000;
+var COOKIE_EXPIRY_MS = 15 * 60 * 60 * 1000;
 var _cachedCookie    = '';
 var _cookieTimestamp = 0;
 
