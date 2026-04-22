@@ -626,7 +626,7 @@ function getPlaylist(contentId, title, platform, cookie, token) {
       var sources = [], subtitles = [];
       playlist.forEach(function (item) {
         (item.sources || []).forEach(function (src) {
-          var u = source.file || '';
+          var u = src.file || '';
           u = u.replace('/tv/', '/');
           if (!u.startsWith('/')) u = '/' + u;
           u = NETMIRROR_PLAY + '/' + u.replace(/^\//, '');  // always domain + "/" + path (no double slash)
