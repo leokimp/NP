@@ -759,7 +759,7 @@ function buildStream(source, platform, resolved, content, episodeData, fullCooki
     _quality : quality,
     type    : 'hls',
     headers : {
-      'User-Agent'      : 'Mozilla/5.0 (Android) mpvEx',
+      'User-Agent'      : 'Mozilla/5.0 (Android) ExoPlayer',
       'Accept'          : '*/*',
       'Accept-Encoding' : 'identity',
       'Connection'      : 'keep-alive',
