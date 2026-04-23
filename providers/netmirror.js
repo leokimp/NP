@@ -153,6 +153,22 @@ function makeCookieString(obj) {
   return Object.entries(obj).map(function (kv) { return kv[0] + '=' + kv[1]; }).join('; ');
 }
 
+// Decodes HTML entities returned by the server in episode titles.
+// e.g. &#34;Get Some&#34;  →  "Get Some"
+//      &amp;            →  &
+//      &lt; / &gt;     →  < / >
+function decodeHtmlEntities(str) {
+  if (!str) return str;
+  return str
+    .replace(/&#(\d+);/g,   function (_, code) { return String.fromCharCode(parseInt(code, 10)); })
+    .replace(/&#x([0-9a-f]+);/gi, function (_, hex)  { return String.fromCharCode(parseInt(hex, 16)); })
+    .replace(/&quot;/gi,  '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&amp;/gi,  '&')
+    .replace(/&lt;/gi,   '<')
+    .replace(/&gt;/gi,   '>');
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Stream Cache  (ENABLE_STREAM_CACHE)
 //
@@ -984,7 +1000,7 @@ function buildStream(source, platform, resolved, content, episodeData, fullCooki
     var sNum = String(episodeData.s  || episodeData.season  || episodeData.season_number  || '').replace(/\D/g, '');
     var eNum = String(episodeData.ep || episodeData.episode || episodeData.episode_number || '').replace(/\D/g, '');
     titleLine += ' - S' + sNum + 'E' + eNum;
-    if (episodeData.t) titleLine += ' - ' + episodeData.t;
+    if (episodeData.t) titleLine += ' - ' + decodeHtmlEntities(episodeData.t);
   }
 
   var lines = [titleLine];
