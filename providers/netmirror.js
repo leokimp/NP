@@ -70,7 +70,26 @@ var ENABLE_DEEP_VALIDATION = false;
 // false = Pass the original net52.cc HLS URL straight to the app (current behaviour)
 var ENABLE_DIRECT_CDN_LINKS = true;
 
-
+// ✨ TOGGLE 3 ✨
+// true  = On first scrape, save stream links to your Cloudflare cache worker.
+//         On subsequent scrapes within the TTL window the worker is called first;
+//         if it returns streams the full bypass/search/playlist pipeline is skipped
+//         entirely — making repeat loads nearly instant.
+// false = Always scrape fresh (current behaviour, no worker calls)
+//
+// ⚠ You MUST point CACHE_WORKER_URL at a worker that implements the same REST
+//   contract as cache.leokimpese.workers.dev (used by cloudscraper.js):
+//     GET  /<key>   → { streams:[...] }  or  HTTP 404
+//     POST /        ← { key, streams, ttl, metadata }
+//     POST /clearall
+//     GET  /stats
+//
+// Stream URLs contain an expiry token in the `in=` query parameter.
+// Keep CACHE_TTL_SECONDS well below the token lifetime (usually ~24 h).
+// 3 600 s (1 h) is a safe conservative default.
+var ENABLE_STREAM_CACHE  = true;
+var CACHE_WORKER_URL     = 'https://cache.leokimpese.workers.dev';
+var CACHE_TTL_SECONDS    = 3600;   // seconds — how long the worker stores stream links
 
 
 var TMDB_API_KEY    = '439c478a771f35c05022f9feabcca01c';
@@ -85,6 +104,12 @@ var PLUGIN_TAG      = '[NetMirror]';
 var COOKIE_EXPIRY_MS = 15 * 60 * 60 * 1000;
 var _cachedCookie    = '';
 var _cookieTimestamp = 0;
+
+// In-flight deduplication: if two identical getStreams() calls arrive while the
+// first scrape is still running, the second one awaits the SAME Promise instead
+// of spawning a duplicate bypass/search/playlist pipeline.
+// Keyed by nmCacheKey(); entries are deleted automatically when the Promise settles.
+var _nmInFlight = {};
 
 var PLATFORM_OTT = { netflix: 'nf', primevideo: 'pv', disney: 'hs' };
 var PLATFORM_LABEL = { netflix: 'Netflix', primevideo: 'Prime Video', disney: 'Disney+' };
@@ -129,7 +154,106 @@ function makeCookieString(obj) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CDN Link Resolver  (ENABLE_DIRECT_CDN_LINKS)
+// Stream Cache  (ENABLE_STREAM_CACHE)
+//
+// Mirrors the cache.leokimpese.workers.dev contract used by cloudscraper.js.
+// Cache keys are prefixed with "nm_" so this plugin's entries never collide
+// with another plugin's data, even when both share the same worker URL.
+//
+// Why stream headers are safe to cache:
+//   buildStream() sets  Cookie: 'hd=on'  — a static, non-session value.
+//   The auth token lives inside the stream URL's `in=` query parameter,
+//   not in the Cookie header, so cached objects stay playable until the
+//   token expiry that is already baked into the URL itself.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Build a unique string key for a given content/episode combination.
+// Format: nm_<tmdbId>_<type>_<season>_<episode>
+function nmCacheKey(tmdbId, type, season, episode) {
+  return 'nm_' + tmdbId +
+    '_' + (type    || 'movie') +
+    '_' + (season  != null ? season  : 'null') +
+    '_' + (episode != null ? episode : 'null');
+}
+
+// GET /<key>  →  { streams:[...] } | HTTP 404
+// Returns the streams array on a cache hit, or null on miss / any error.
+// Never throws — callers can always treat null as "go scrape".
+function nmGetCachedStreams(tmdbId, type, season, episode) {
+  var key = nmCacheKey(tmdbId, type, season, episode);
+  console.log(PLUGIN_TAG + ' [CACHE] Checking key: ' + key);
+
+  return fetch(CACHE_WORKER_URL + '/' + key, {
+    method : 'GET',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  .then(function (res) {
+    if (res.status === 404) {
+      console.log(PLUGIN_TAG + ' [CACHE] Miss: ' + key);
+      return null;
+    }
+    if (!res.ok) {
+      console.log(PLUGIN_TAG + ' [CACHE] Worker error: HTTP ' + res.status);
+      return null;
+    }
+    return res.json();
+  })
+  .then(function (data) {
+    if (!data || !Array.isArray(data.streams) || !data.streams.length) {
+      console.log(PLUGIN_TAG + ' [CACHE] Invalid payload — treating as miss.');
+      return null;
+    }
+    console.log(PLUGIN_TAG + ' [CACHE] ⚡ Hit: ' + key + ' (' + data.streams.length + ' stream(s))');
+    return data.streams;
+  })
+  .catch(function (err) {
+    // Network failure, malformed JSON, etc. — just treat as miss so scraping proceeds.
+    console.log(PLUGIN_TAG + ' [CACHE] Fetch error: ' + err.message + ' — proceeding with scrape.');
+    return null;
+  });
+}
+
+// POST /  ←  { key, streams, ttl, metadata }
+// Fire-and-forget safe: errors only log, never bubble up to the caller.
+function nmSetCachedStreams(tmdbId, type, season, episode, streams, ttl) {
+  var key     = nmCacheKey(tmdbId, type, season, episode);
+  var ttlSecs = ttl || CACHE_TTL_SECONDS;
+
+  console.log(PLUGIN_TAG + ' [CACHE] Saving: ' + key +
+    ' (' + streams.length + ' stream(s), TTL: ' + ttlSecs + 's)');
+
+  return fetch(CACHE_WORKER_URL, {
+    method : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body   : JSON.stringify({
+      key     : key,
+      streams : streams,
+      ttl     : ttlSecs,
+      metadata: {
+        tmdbId  : tmdbId,
+        type    : type,
+        season  : season,
+        episode : episode,
+        savedAt : Date.now(),
+        plugin  : 'netmirror-v10',
+      },
+    }),
+  })
+  .then(function (res) {
+    if (!res.ok) {
+      console.log(PLUGIN_TAG + ' [CACHE] Save failed: HTTP ' + res.status);
+      return false;
+    }
+    console.log(PLUGIN_TAG + ' [CACHE] Saved ✓ (' + key + ')');
+    return true;
+  })
+  .catch(function (err) {
+    console.log(PLUGIN_TAG + ' [CACHE] Save error: ' + err.message);
+    return false;
+  });
+}
+
+
 // Fetches the net52.cc master playlist and swaps the stream URL for the direct
 // CDN sub-playlist URL that matches the stream's quality label.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -967,11 +1091,63 @@ function loadPlatformContent(platform, hit, resolved, season, episode, cookie) {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Public entry point — thin shell that handles:
+//   1. In-flight deduplication  (prevents double-scraping the same title)
+//   2. Cache gate               (returns stored streams instantly if available)
+//   3. Delegates real work to   _getStreamsCore()
+// ─────────────────────────────────────────────────────────────────────────────
 function getStreams(tmdbId, type, season, episode) {
-  return __async(this, null, function* () {
-    var s = season  ? parseInt(season)  : null;
-    var e = episode ? parseInt(episode) : null;
+  var s   = season  ? parseInt(season)  : null;
+  var e   = episode ? parseInt(episode) : null;
 
+  // Determine content type string once, used for both cache key and inner call.
+  var contentType = (type === 'series' || type === 'tv') ? 'tv' : 'movie';
+  var flightKey   = nmCacheKey(tmdbId, contentType, s, e);
+
+  // ── 1. In-flight deduplication ─────────────────────────────────────────────
+  // If an identical request is already mid-scrape, return the same Promise.
+  // This prevents duplicate 60-second pipelines when two requests race.
+  if (_nmInFlight[flightKey]) {
+    console.log(PLUGIN_TAG + ' [IN-FLIGHT] Awaiting existing scrape: ' + flightKey);
+    return _nmInFlight[flightKey];
+  }
+
+  // ── 2. Cache gate + real scrape ────────────────────────────────────────────
+  var promise;
+
+  if (ENABLE_STREAM_CACHE) {
+    // Check the worker first; only run the full pipeline on a cache miss.
+    promise = nmGetCachedStreams(tmdbId, contentType, s, e)
+      .then(function (cached) {
+        if (cached) {
+          console.log(PLUGIN_TAG + ' [CACHE] ⚡ Instant return — ' + cached.length + ' stream(s) from cache.');
+          return cached;
+        }
+        // Cache miss — run the full scrape and save results afterwards.
+        return _getStreamsCore(tmdbId, type, s, e, contentType);
+      });
+  } else {
+    // Caching disabled — always scrape fresh.
+    promise = _getStreamsCore(tmdbId, type, s, e, contentType);
+  }
+
+  // Register in-flight; clean up once settled (resolved OR rejected).
+  _nmInFlight[flightKey] = promise;
+  promise.then(
+    function () { delete _nmInFlight[flightKey]; },
+    function () { delete _nmInFlight[flightKey]; }
+  );
+
+  return promise;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Full scrape pipeline — bypass → search → playlist → validate → (cache save)
+// Called by getStreams() on a cache miss (or when ENABLE_STREAM_CACHE = false).
+// ─────────────────────────────────────────────────────────────────────────────
+function _getStreamsCore(tmdbId, type, s, e, contentType) {
+  return __async(this, null, function* () {
     console.log(PLUGIN_TAG + ' ID: ' + tmdbId + ' type: ' + type + (s ? ' S' + s + 'E' + e : ''));
 
     var resolved = yield resolveIds(tmdbId, type);
@@ -1019,11 +1195,18 @@ function getStreams(tmdbId, type, season, episode) {
     });
 
     var streamArrays = yield Promise.all(loadPromises);
-    
+
     var finalStreams = [];
     streamArrays.forEach(function(arr) {
       if (arr && arr.length) finalStreams = finalStreams.concat(arr);
     });
+
+    // ── Cache save (fire-and-forget) ──────────────────────────────────────────
+    // Only save non-empty results. Do NOT yield — we don't want to make the
+    // caller wait for the worker write. Errors are logged inside nmSetCachedStreams.
+    if (ENABLE_STREAM_CACHE && finalStreams.length) {
+      nmSetCachedStreams(tmdbId, contentType, s, e, finalStreams, CACHE_TTL_SECONDS);
+    }
 
     return finalStreams;
   });
