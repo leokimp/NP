@@ -700,8 +700,8 @@ function getPlaylist(contentId, title, platform, cookie, token) {
           var u = src.file || '';
           u = u.replace('/tv/', '/');
           if (!u.startsWith('/')) u = '/' + u;
-          // FIX 1: Retain the double slash 'https://net52.cc//path' for proper CDN routing
-          u = NETMIRROR_PLAY + '/' + u; 
+          // Ensure single slash: u already starts with '/', so join directly
+          u = NETMIRROR_PLAY + u;
           if (u) sources.push({ url: u, quality: src.label || '', type: src.type || 'application/x-mpegURL' });
         });
         (item.tracks || []).filter(function (t) { return t.kind === 'captions'; }).forEach(function (track) {
@@ -759,13 +759,11 @@ function buildStream(source, platform, resolved, content, episodeData, fullCooki
     _quality : quality,
     type    : 'hls',
     headers : {
-      'User-Agent'      : 'Mozilla/5.0 (Android) ExoPlayer',
+      'User-Agent'      : 'Mozilla/5.0 (Android) mpvEx',
       'Accept'          : '*/*',
       'Accept-Encoding' : 'identity',
       'Connection'      : 'keep-alive',
-      // FIX 2: Ensure ExoPlayer receives the full auth cookie to fetch segments directly
-      'Cookie'          : fullCookieJar,
-      'Origin'          : NETMIRROR_BASE,
+      'Cookie'          : 'hd=on',
       'Referer'         : NETMIRROR_PLAY + '/',
     },
     behaviorHints: { bingeGroup: 'netmirror-' + platform },
