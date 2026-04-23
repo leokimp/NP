@@ -58,10 +58,17 @@ module.exports = __toCommonJS(netmirror_exports);
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
-// ✨ NEW TOGGLE ✨
+// ✨ TOGGLE 1 ✨
 // true  = Deep-dive playlist parsing (Checks for 29s dummy videos, slower)
-// false = Fast HEAD request only (Checks for 403/404 dead links, faster)
+// false = Fast pass-through (no validation, fastest)
 var ENABLE_DEEP_VALIDATION = false;
+
+// ✨ TOGGLE 2 ✨
+// true  = Resolve net52.cc master playlists to direct CDN sub-playlist URLs
+//         e.g. https://s20.freecdn1.top/files/81715676/1080p/1080p.m3u8?in=...
+//         Slower (one extra fetch per stream) but bypasses the proxy hop.
+// false = Pass the original net52.cc HLS URL straight to the app (current behaviour)
+var ENABLE_DIRECT_CDN_LINKS = true;
 
 
 
@@ -122,8 +129,115 @@ function makeCookieString(obj) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Stream Validator (Unified Fast & Deep-Dive Modes)
+// CDN Link Resolver  (ENABLE_DIRECT_CDN_LINKS)
+// Fetches the net52.cc master playlist and swaps the stream URL for the direct
+// CDN sub-playlist URL that matches the stream's quality label.
 // ─────────────────────────────────────────────────────────────────────────────
+function resolveDirectCdnLink(streamObj) {
+  if (!ENABLE_DIRECT_CDN_LINKS) return Promise.resolve(streamObj);
+
+  console.log(PLUGIN_TAG + ' [CDN RESOLVE] Fetching master: ' + streamObj.url);
+
+  return fetch(streamObj.url, { method: 'GET', headers: streamObj.headers })
+    .then(function (res) {
+      if (!res.ok) {
+        console.warn(PLUGIN_TAG + ' [CDN RESOLVE] HTTP ' + res.status + ' — keeping original URL.');
+        return streamObj;
+      }
+      return res.text();
+    })
+    .then(function (playlistText) {
+      if (!playlistText) return streamObj;
+
+      // If this is already a media playlist (no variant tags), pass through as-is
+      if (!playlistText.includes('#EXT-X-STREAM-INF')) {
+        console.log(PLUGIN_TAG + ' [CDN RESOLVE] Not a master playlist — keeping original URL.');
+        return streamObj;
+      }
+
+      // ── Parse every variant entry in the master playlist ──────────────────
+      var lines = playlistText.split('\n');
+      var variants = [];
+
+      for (var i = 0; i < lines.length; i++) {
+        if (!lines[i].includes('#EXT-X-STREAM-INF')) continue;
+        var infLine = lines[i];
+
+        // The very next non-comment, non-empty line is the variant URL
+        for (var j = i + 1; j < lines.length; j++) {
+          var line = lines[j].trim();
+          if (!line || line.startsWith('#')) continue;
+
+          // Build absolute CDN URL
+          var varUrl = line;
+          if (!varUrl.startsWith('http')) {
+            if (varUrl.startsWith('/')) {
+              var domainMatch = streamObj.url.match(/^(https?:\/\/[^\/]+)/);
+              varUrl = (domainMatch ? domainMatch[1] : NETMIRROR_PLAY) + varUrl;
+            } else {
+              var basePath = streamObj.url.substring(0, streamObj.url.lastIndexOf('/') + 1);
+              varUrl = basePath + varUrl;
+            }
+          }
+
+          // Detect quality from the URL path segment (e.g. "/1080p/") …
+          var qualFromPath = varUrl.match(/\/(1080p|720p|480p|360p)\//i);
+          // … or fall back to RESOLUTION= height in the #EXT-X-STREAM-INF line
+          var resMatch  = infLine.match(/RESOLUTION=\d+x(\d+)/i);
+          var bwMatch   = infLine.match(/BANDWIDTH=(\d+)/i);
+
+          var varQuality = null;
+          if (qualFromPath) {
+            varQuality = qualFromPath[1].toLowerCase();
+          } else if (resMatch) {
+            var h = parseInt(resMatch[1]);
+            if      (h >= 1080) varQuality = '1080p';
+            else if (h >= 720)  varQuality = '720p';
+            else if (h >= 480)  varQuality = '480p';
+            else                varQuality = '360p';
+          }
+
+          variants.push({
+            url      : varUrl,
+            quality  : varQuality,
+            bandwidth: bwMatch ? parseInt(bwMatch[1]) : 0,
+          });
+          break; // move on to the next #EXT-X-STREAM-INF
+        }
+      }
+
+      if (!variants.length) {
+        console.warn(PLUGIN_TAG + ' [CDN RESOLVE] No variants parsed — keeping original URL.');
+        return streamObj;
+      }
+
+      // ── Pick the variant whose quality matches the stream label ───────────
+      var targetQuality = (streamObj._quality || '').toLowerCase();
+      var match = null;
+
+      if (targetQuality && targetQuality !== 'auto') {
+        match = variants.find(function (v) { return v.quality === targetQuality; });
+      }
+
+      // If no exact quality match, fall back to the highest-bandwidth variant
+      if (!match) {
+        variants.sort(function (a, b) { return b.bandwidth - a.bandwidth; });
+        match = variants[0];
+        console.log(PLUGIN_TAG + ' [CDN RESOLVE] No exact quality match for "' + targetQuality + '" — using highest bandwidth variant.');
+      }
+
+      console.log(PLUGIN_TAG + ' [CDN RESOLVE] ✓ ' + streamObj.url + '\n              → ' + match.url);
+
+      // Return a new stream object with the direct CDN URL swapped in
+      return Object.assign({}, streamObj, { url: match.url });
+    })
+    .catch(function (err) {
+      console.warn(PLUGIN_TAG + ' [CDN RESOLVE ERROR] ' + err.message + ' — keeping original URL.');
+      return streamObj;
+    });
+}
+
+
 function checkStreamAlive(streamObj) {
   // ==========================================
   // FAST MODE (ENABLE_DEEP_VALIDATION = false)
@@ -825,9 +939,12 @@ function loadPlatformContent(platform, hit, resolved, season, episode, cookie) {
                 })
                 .map(function (src) { return buildStream(src, platform, resolved, content, episodeObj, fullCookieJar); });
 
-              // Map them into our HEAD request validator
+              // Step 1 (optional): resolve net52.cc master URL → direct CDN URL
+              // Step 2 (optional): validate the resulting URL via deep-dive check
               var validationPromises = rawStreams.map(function(streamData) {
-                  return checkStreamAlive(streamData);
+                  return resolveDirectCdnLink(streamData).then(function(resolved) {
+                      return checkStreamAlive(resolved);
+                  });
               });
 
               // Wait for all HEAD requests to finish
