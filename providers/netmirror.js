@@ -1,13 +1,13 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════════════════╗
- * ║               NetMirror — Nuvio Mobile Plugin  v4.0                          ║
+ * ║                NetMirror — Nuvio Mobile Plugin  v4.0                         ║
  * ╠══════════════════════════════════════════════════════════════════════════════╣
- * ║  Source     › https://net22.cc  /  https://net52.cc                          ║
+ * ║  Source      › https://net22.cc  /  https://net52.cc                         ║
  * ╠══════════════════════════════════════════════════════════════════════════════╣
- * ║  Platforms  › Netflix · Prime Video · Disney+                                ║
- * ║  Supports   › Movies & Series  (480p / 720p / 1080p / Auto)                  ║
- * ║  Engine     › CJS / Hermes (Nuvio Mobile compatible)                         ║
- * ║  Search     › cloudscraper resolveIds + IMDb AKAs + Pingora-style scoring    ║
+ * ║  Platforms   › Netflix · Prime Video · Disney+                               ║
+ * ║  Supports    › Movies & Series  (480p / 720p / 1080p / Auto)                 ║
+ * ║  Engine      › CJS / Hermes (Nuvio Mobile compatible)                        ║
+ * ║  Search      › cloudscraper resolveIds + IMDb AKAs + Pingora-style scoring   ║
  * ╚══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -58,11 +58,22 @@ module.exports = __toCommonJS(netmirror_exports);
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
+// ✨ NEW TOGGLE ✨
+// true  = Deep-dive playlist parsing (Checks for 29s dummy videos, slower)
+// false = Fast HEAD request only (Checks for 403/404 dead links, faster)
+var ENABLE_DEEP_VALIDATION = false;
+
+
+
 
 var TMDB_API_KEY    = '439c478a771f35c05022f9feabcca01c';
 var NETMIRROR_BASE  = 'https://net22.cc';
 var NETMIRROR_PLAY  = 'https://net52.cc';
 var PLUGIN_TAG      = '[NetMirror]';
+
+
+
+
 
 var COOKIE_EXPIRY_MS = 15 * 60 * 60 * 1000;
 var _cachedCookie    = '';
@@ -109,6 +120,146 @@ function unixNow() { return Math.floor(Date.now() / 1000); }
 function makeCookieString(obj) {
   return Object.entries(obj).map(function (kv) { return kv[0] + '=' + kv[1]; }).join('; ');
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stream Validator (Unified Fast & Deep-Dive Modes)
+// ─────────────────────────────────────────────────────────────────────────────
+function checkStreamAlive(streamObj) {
+  // ==========================================
+  // FAST MODE (ENABLE_DEEP_VALIDATION = false)
+  // ==========================================
+  if (!ENABLE_DEEP_VALIDATION) {
+    return Promise.resolve(streamObj);
+  }
+
+  // ==========================================
+  // PERMISSIVE MODE (ENABLE_DEEP_VALIDATION = true)
+  // Only confirmed dummy videos (< 60s) are dropped.
+  // Everything else is sent to the app.
+  // ==========================================
+  return fetch(streamObj.url, {
+    method: 'GET',
+    headers: streamObj.headers
+  })
+  .then(function(res) {
+    if (!res.ok) {
+       console.warn(PLUGIN_TAG + ' [HTTP ' + res.status + '] Cannot validate, but sending to app.');
+       return streamObj;
+    }
+    return res.text();
+  })
+  .then(function(playlistText) {
+    if (!playlistText) return streamObj; // Pass to app if empty
+
+    // Helper to calculate total duration from a playlist body
+    function calcDuration(text) {
+        var extinfRegex = /#EXTINF:(\d+(?:\.\d+)?)/g;
+        var match;
+        var total = 0;
+        var count = 0;
+        while ((match = extinfRegex.exec(text)) !== null) {
+            total += parseFloat(match[1]);
+            count++;
+        }
+        return { total: total, count: count };
+    }
+
+    // SCENARIO 1: It is already a Media Playlist
+    if (playlistText.includes('#EXTINF:')) {
+        var d = calcDuration(playlistText);
+        console.log(PLUGIN_TAG + ' [MEDIA PLAYLIST] Duration: ' + d.total.toFixed(2) + 's (' + d.count + ' segments)');
+
+        // The ONLY time we drop a link: confirmed dummy video
+        if (d.total < 60 && d.total > 0) {
+            console.warn(PLUGIN_TAG + ' [DUMMY VIDEO DETECTED] Duration ' + d.total.toFixed(2) + 's. Dropping.');
+            return null;
+        }
+        console.log(PLUGIN_TAG + ' [VALIDATED] ' + streamObj.url);
+        return streamObj;
+    }
+
+    // SCENARIO 2: It is a Master Playlist. We must dig deeper.
+    else if (playlistText.includes('#EXT-X-STREAM-INF')) {
+        console.log(PLUGIN_TAG + ' [MASTER PLAYLIST] Found. Digging for sub-playlist...');
+
+        var lines = playlistText.split('\n');
+        var subUrl = null;
+
+        // Find the first URL right after an #EXT-X-STREAM-INF tag
+        for (var i = 0; i < lines.length; i++) {
+            if (lines[i].includes('#EXT-X-STREAM-INF')) {
+                for (var j = i + 1; j < lines.length; j++) {
+                    var line = lines[j].trim();
+                    if (line && !line.startsWith('#')) {
+                        subUrl = line;
+                        break;
+                    }
+                }
+                if (subUrl) break;
+            }
+        }
+
+        if (!subUrl) {
+            console.warn(PLUGIN_TAG + ' [MASTER PLAYLIST] Cannot extract sub-playlist, sending to app.');
+            return streamObj;
+        }
+
+        // Build the absolute URL for the sub-playlist
+        var absoluteSubUrl = subUrl;
+        if (!subUrl.startsWith('http')) {
+            if (subUrl.startsWith('/')) {
+                // If it starts with a single slash, attach to base domain
+                var domainMatch = streamObj.url.match(/^(https?:\/\/[^\/]+)/);
+                absoluteSubUrl = (domainMatch ? domainMatch[1] : NETMIRROR_PLAY) + subUrl;
+            } else {
+                // Relative path (e.g., "video_1080p.m3u8") - attach to current path folder
+                var basePath = streamObj.url.substring(0, streamObj.url.lastIndexOf('/') + 1);
+                absoluteSubUrl = basePath + subUrl;
+            }
+        }
+
+        console.log(PLUGIN_TAG + ' [SUB-PLAYLIST] Fetching: ' + absoluteSubUrl);
+
+        // Fetch the Sub-Playlist
+        return fetch(absoluteSubUrl, {
+            method: 'GET',
+            headers: streamObj.headers
+        })
+        .then(function(subRes) {
+             if (!subRes.ok) throw new Error('Sub-playlist HTTP ' + subRes.status);
+             return subRes.text();
+        })
+        .then(function(subText) {
+             var subD = calcDuration(subText);
+             console.log(PLUGIN_TAG + ' [SUB-PLAYLIST] Duration: ' + subD.total.toFixed(2) + 's (' + subD.count + ' segments)');
+
+             // The ONLY time we drop inside a master playlist: confirmed dummy video
+             if (subD.total < 60 && subD.total > 0) {
+                 console.warn(PLUGIN_TAG + ' [DUMMY VIDEO DETECTED inside Master] Duration ' + subD.total.toFixed(2) + 's. Dropping.');
+                 return null;
+             }
+
+             console.log(PLUGIN_TAG + ' [VALIDATED] ' + streamObj.url);
+             return streamObj; // Return the ORIGINAL Master Playlist object to Nuvio
+        })
+        .catch(function(e) {
+             console.warn(PLUGIN_TAG + ' [SUB-PLAYLIST ERROR] ' + e.message + ' -> Sending to app anyway.');
+             return streamObj;
+        });
+    }
+
+    // SCENARIO 3: Unknown format — send to app anyway
+    else {
+         console.warn(PLUGIN_TAG + ' [UNKNOWN FORMAT] Sending to app anyway.');
+         return streamObj;
+    }
+  })
+  .catch(function(err) {
+    console.warn(PLUGIN_TAG + ' [NETWORK ERROR] ' + err.message + ' -> Sending to app anyway.');
+    return streamObj;
+  });
+}
+
 
 function request(url, opts) {
   opts = opts || {};
@@ -185,24 +336,6 @@ function qualitySortScore(q) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ── SEARCH ENGINE — ported from cloudscraper.js ──────────────────────────────
-//
-// Key improvements over previous versions:
-//
-//  1. normTitle strips (year), "Season N", "S01" noise from candidates
-//     before scoring, so "Mirzapur (2018)" cleanly matches query "Mirzapur".
-//
-//  2. calcTitleSim priority:
-//       a. prefix word-boundary  → 0.95   ("kill" vs "kill 2024")
-//       b. whole-word contained  → 0.72
-//       c. max(seqRatio, jaccard) as fuzzy fallback
-//
-//  3. scoreResult applies year bonus/penalty AFTER initial score:
-//       delta==0  → +0.10 (cap 1.0)
-//       delta>3   → x0.70
-//     Hard minimum rankScore 0.72 (raised from 0.62) — kills weak/partial matches.
-//
-//  4. resolveIds (from cloudscraper) separates ID resolution cleanly:
-//     IMDb tt-path vs TMDB numeric path, builds searchQueue once upfront.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function seqRatio(a, b) {
@@ -228,15 +361,14 @@ function jaccardWords(a, b) {
   return union === 0 ? 0 : inter / union;
 }
 
-// Normalise for comparison — strips year tags, season tags, punctuation
 function normTitle(s) {
   return s
     .replace(/&amp;/gi, '&')
     .toLowerCase()
     .replace(/\s*&\s*/g, ' and ')
-    .replace(/\(\d{4}\)/g, '')           // "(2024)"
-    .replace(/\bseason\s*\d+\b/gi, '')   // "Season 2"
-    .replace(/\bs\d{1,2}\b/gi, '')       // "S01"
+    .replace(/\(\d{4}\)/g, '')
+    .replace(/\bseason\s*\d+\b/gi, '')
+    .replace(/\bs\d{1,2}\b/gi, '')
     .replace(/[^a-z0-9\s]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
@@ -246,23 +378,16 @@ function calcTitleSim(query, candidate) {
   var q = normTitle(query);
   var c = normTitle(candidate);
   if (!q || !c) return 0;
-  
-  // 1. Exact match gets an automatic 1.0 (Passes immediately)
   if (q === c) return 1.0;
 
   var esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-  // 2. Prefix match (e.g. "Kill" vs "Kill Blue")
   if (new RegExp('^' + esc + '\\b').test(c)) {
-    return 0.65; // Base score is BELOW the 0.72 threshold!
+    return 0.65;
   }
-  
-  // 3. Contained match
   if (new RegExp('\\b' + esc + '\\b').test(c)) {
     return 0.60;
   }
-  
-  // 4. Fuzzy fallback (heavily capped)
   return Math.max(seqRatio(q, c), jaccardWords(q, c)) * 0.8;
 }
 
@@ -275,27 +400,18 @@ function scoreResult(query, resultTitle, targetYear, resultYear) {
   if (targetYear && rYear) {
     var delta = Math.abs(parseInt(targetYear) - parseInt(rYear));
     if (delta === 0) {
-      rankScore += 0.15; // Exact year bumps a failing 0.65 to a passing 0.80
+      rankScore += 0.15;
     } else if (delta === 1) {
-      rankScore += 0.05; // 1-year buffer bumps a 0.65 to 0.70 (Still fails unless it was an exact 1.0 title match)
+      rankScore += 0.05;
     } else {
-      rankScore -= 0.30; // Brutal penalty for wrong year
+      rankScore -= 0.30;
     }
   } else if (targetYear && !rYear && titleScore < 1.0) {
-    // The "KILL BLUE" Rule: If TMDB wants a specific year, but the API gives no year,
-    // AND the title is not an exact match, penalize it so it stays dead.
     rankScore -= 0.10;
   }
   
   return rankScore >= 0.72 ? rankScore : 0;
 }
-// ─────────────────────────────────────────────────────────────────────────────
-// resolveIds — ported from cloudscraper.js
-//
-// Accepts rawId (tt…, plain TMDB number, or tmdb:… prefix) and type.
-// Returns a single resolved object used everywhere downstream — no further
-// external API calls needed after this.
-// ─────────────────────────────────────────────────────────────────────────────
 
 function resolveIds(rawId, type) {
   return __async(this, null, function* () {
@@ -306,7 +422,6 @@ function resolveIds(rawId, type) {
     var year      = '';
 
     if (rawId && rawId.startsWith('tt')) {
-      // ── IMDb ID path ─────────────────────────────────────────────────────
       console.log(PLUGIN_TAG + ' [resolveIds] IMDb path: ' + rawId);
       imdbId = rawId;
       var iRes = yield fetch('https://api.imdbapi.dev/titles/' + rawId)
@@ -317,7 +432,6 @@ function resolveIds(rawId, type) {
       }
 
     } else {
-      // ── TMDB ID path ─────────────────────────────────────────────────────
       var tmdbId = (rawId || '').replace(/^tmdb:/i, '');
       console.log(PLUGIN_TAG + ' [resolveIds] TMDB path: ' + tmdbId);
       var info = yield fetch(
@@ -330,7 +444,6 @@ function resolveIds(rawId, type) {
       year   = ((isTv ? info.first_air_date : info.release_date) || '').slice(0, 4);
     }
 
-    // ── Build search queue from IMDb AKAs ────────────────────────────────
     var searchQueue   = [];
     var resolvedTitle = title;
 
@@ -352,7 +465,6 @@ function resolveIds(rawId, type) {
         resolvedTitle = imdbInfo.originalTitle || imdbInfo.primaryTitle || title;
       }
 
-      // Indian AKAs — ASCII-safe only to avoid garbage results
       var indianAkas = (akasData.akas || [])
         .filter(function (a) { return a.country && a.country.code === 'IN'; })
         .map(function (a) { return a.text; })
@@ -364,7 +476,6 @@ function resolveIds(rawId, type) {
 
     if (searchQueue.length === 0) searchQueue.push(resolvedTitle || title);
 
-    // Sequel short-variant: "Pushpa: The Rule - Part 2" → "Pushpa 2"
     var base      = resolvedTitle || title;
     var partMatch = base.match(/^([^:\-\u2013\u2014]+).*?(?:Part|Pt\.?)\s*(\d+)\s*$/i);
     if (partMatch) {
@@ -381,11 +492,9 @@ function resolveIds(rawId, type) {
       }
     }
 
-    // Number suffix variant: "Hotspot 2 Much" -> "Hotspot 2"
     var numMatch = base.match(/^([^\d]+\s\d+)\b/i);
     if (numMatch && numMatch[1].length < base.length) {
       var shortNum = numMatch[1].trim();
-      // Ensure we aren't accidentally grabbing a year like "Blade Runner 2049"
       if (!/\b(19|20)\d{2}\b/.test(shortNum)) {
         console.log(PLUGIN_TAG + ' [resolveIds] Number variant: ' + shortNum);
         if (searchQueue.indexOf(shortNum) === -1) searchQueue.push(shortNum);
@@ -405,18 +514,11 @@ function resolveIds(rawId, type) {
   });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// NetMirror platform search — uses cloudscraper scoring
-// ─────────────────────────────────────────────────────────────────────────────
-
 function searchPlatform(searchQueue, year, platform, cookie, isTv) {
   var ott  = PLATFORM_OTT[platform];
   var jar  = makeCookieString({ t_hash_t: cookie, user_token: '233123f803cf02184bf6c67e149cdd50', hd: 'on', ott: ott });
   var hdrs = Object.assign({}, BASE_HEADERS, { Cookie: jar, Referer: NETMIRROR_BASE + '/tv/home' });
 
-  // Search for a single query, score each candidate with scoreResult.
-  // originalQuery is what we score against (no year suffix).
-  // searchQuery   is what we actually send to the API (may include year).
   function doSearch(originalQuery, searchQuery) {
     var url = SEARCH_ENDPOINT[platform] + '?s=' + encodeURIComponent(searchQuery) + '&t=' + unixNow();
     return request(url, { headers: hdrs })
@@ -429,8 +531,8 @@ function searchPlatform(searchQueue, year, platform, cookie, isTv) {
           if (item.r) {
             var rStr = String(item.r).toLowerCase();
             var isItemSeries = rStr.includes('series') || rStr.includes('season') || rStr.includes('episode');
-            if (isTv && !isItemSeries && /\d+(h|m)/.test(rStr)) return; // Skip movies when looking for TV
-            if (!isTv && isItemSeries) return; // Skip TV shows when looking for Movies
+            if (isTv && !isItemSeries && /\d+(h|m)/.test(rStr)) return;
+            if (!isTv && isItemSeries) return;
           }
 
           var rank = scoreResult(originalQuery, item.t, year, item.y);
@@ -442,7 +544,6 @@ function searchPlatform(searchQueue, year, platform, cookie, isTv) {
       .catch(function () { return null; });
   }
 
-  // Build search pairs: bare + year-appended for each queue entry
   var pairs = [];
   searchQueue.forEach(function (q) {
     pairs.push({ original: q, search: q });
@@ -464,10 +565,6 @@ function searchPlatform(searchQueue, year, platform, cookie, isTv) {
       return best;
     });
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Authentication Bypass
-// ─────────────────────────────────────────────────────────────────────────────
 
 function bypass() {
   var now = Date.now();
@@ -497,10 +594,6 @@ function bypass() {
   return attempt(0);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Content Loading & Episode Pagination
-// ─────────────────────────────────────────────────────────────────────────────
-
 function loadContent(contentId, platform, cookie) {
   var ott  = PLATFORM_OTT[platform];
   var jar  = makeCookieString({ t_hash_t: cookie, user_token: '233123f803cf02184bf6c67e149cdd50', ott: ott, hd: 'on' });
@@ -509,17 +602,6 @@ function loadContent(contentId, platform, cookie) {
     .then(function (res) { return res.json(); })
     .then(function (data) {
       console.log(PLUGIN_TAG + ' Loaded: "' + data.title + '"');
-
-      // --- DEBUG CODE START ---
-      console.log('\n[DEBUG] === RAW DATA FOR: ' + data.title + ' ===');
-      console.log('[DEBUG] data.season array:', JSON.stringify(data.season));
-      if (data.episodes && data.episodes.length > 0) {
-        console.log('[DEBUG] Sample episode object (first one):', JSON.stringify(data.episodes[0]));
-      }
-      console.log('[DEBUG] ======================================\n');
-      // --- DEBUG CODE END ---
-
-
       return {
         id       : contentId,
         title    : data.title,
@@ -552,12 +634,6 @@ function fetchMoreEpisodes(contentId, seasonId, platform, cookie, startPage) {
   return page(startPage || 2);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Video Token
-// Step 1: POST play.php on BASE → get h param
-// Step 2: GET play.php on PLAY → parse data-h token
-// ─────────────────────────────────────────────────────────────────────────────
-
 function getVideoToken(contentId, cookie, ott) {
   var jar = makeCookieString({ t_hash_t: cookie, ott: ott || 'nf', hd: 'on' });
   return request(NETMIRROR_BASE + '/play.php', {
@@ -581,7 +657,7 @@ function getVideoToken(contentId, cookie, ott) {
           'Connection'                : 'keep-alive',
           'Host'                      : 'net52.cc',
           'Referer'                   : NETMIRROR_BASE + '/',
-          'sec-ch-ua'                 : '"Chromium";v="142", "Brave";v="142", "Not_A Brand";v="99"',  // ADD
+          'sec-ch-ua'                 : '"Chromium";v="142", "Brave";v="142", "Not_A Brand";v="99"',
           'sec-ch-ua-mobile'          : '?0',
           'sec-ch-ua-platform'        : '"Linux"',
           'Sec-Fetch-Dest'            : 'iframe',
@@ -591,7 +667,7 @@ function getVideoToken(contentId, cookie, ott) {
           'Sec-Fetch-User'            : '?1',
           'Sec-GPC'                   : '1',
           'Upgrade-Insecure-Requests' : '1',
-          'User-Agent'                : 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',  // UPDATE version
+          'User-Agent'                : 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
           'Cookie'                    : jar,
         },
       });
@@ -604,11 +680,6 @@ function getVideoToken(contentId, cookie, ott) {
       return m ? m[1] : null;
     });
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Playlist Fetch
-// encodeURIComponent(token) REQUIRED — raw token breaks server validation
-// ─────────────────────────────────────────────────────────────────────────────
 
 function getPlaylist(contentId, title, platform, cookie, token) {
   var ott = PLATFORM_OTT[platform];
@@ -629,7 +700,8 @@ function getPlaylist(contentId, title, platform, cookie, token) {
           var u = src.file || '';
           u = u.replace('/tv/', '/');
           if (!u.startsWith('/')) u = '/' + u;
-          u = NETMIRROR_PLAY + '/' + u.replace(/^\//, '');  // always domain + "/" + path (no double slash)
+          // FIX 1: Retain the double slash 'https://net52.cc//path' for proper CDN routing
+          u = NETMIRROR_PLAY + '/' + u; 
           if (u) sources.push({ url: u, quality: src.label || '', type: src.type || 'application/x-mpegURL' });
         });
         (item.tracks || []).filter(function (t) { return t.kind === 'captions'; }).forEach(function (track) {
@@ -644,19 +716,8 @@ function getPlaylist(contentId, title, platform, cookie, token) {
     });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Episode Matching
-// ─────────────────────────────────────────────────────────────────────────────
-
 function findEpisode(episodes, targetSeason, targetEpisode) {
   var s = parseInt(targetSeason), e = parseInt(targetEpisode);
-
-  // --- DEBUG CODE START ---
-  console.log('[DEBUG] findEpisode called looking for S' + s + 'E' + e);
-  console.log('[DEBUG] Total episodes loaded in memory:', (episodes || []).length);
-  // --- DEBUG CODE END ---
-
-
   return (episodes || []).find(function (ep) {
     if (!ep) return false;
     var epS, epE;
@@ -672,11 +733,7 @@ function findEpisode(episodes, targetSeason, targetEpisode) {
   }) || null;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Stream Builder
-// ─────────────────────────────────────────────────────────────────────────────
-
-function buildStream(source, platform, resolved, content, episodeData) {
+function buildStream(source, platform, resolved, content, episodeData, fullCookieJar) {
   var quality   = parseQuality(source);
   var platLabel = PLATFORM_LABEL[platform] || platform;
   var langStr   = formatLangs(content.langs);
@@ -706,16 +763,14 @@ function buildStream(source, platform, resolved, content, episodeData) {
       'Accept'          : '*/*',
       'Accept-Encoding' : 'identity',
       'Connection'      : 'keep-alive',
-      'Cookie'          : 'hd=on',
+      // FIX 2: Ensure ExoPlayer receives the full auth cookie to fetch segments directly
+      'Cookie'          : fullCookieJar,
+      'Origin'          : NETMIRROR_BASE,
       'Referer'         : NETMIRROR_PLAY + '/',
     },
     behaviorHints: { bingeGroup: 'netmirror-' + platform },
   };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Platform Pipeline
-// ─────────────────────────────────────────────────────────────────────────────
 
 function loadPlatformContent(platform, hit, resolved, season, episode, cookie) {
   console.log(PLUGIN_TAG + ' Extracting streams from: ' + PLATFORM_LABEL[platform]);
@@ -761,18 +816,33 @@ function loadPlatformContent(platform, hit, resolved, season, episode, cookie) {
             .then(function (playlist) {
               if (!playlist.sources.length) { console.log(PLUGIN_TAG + ' No sources'); return null; }
 
-              var streams = playlist.sources
+              var fullCookieJar = makeCookieString({ t_hash_t: cookie, ott: PLATFORM_OTT[platform], hd: 'on' });
+
+              // Build all stream objects first
+              var rawStreams = playlist.sources
                 .filter(function(src) {
                   var q = parseQuality(src).toLowerCase();
-                  // Drop 480p, 360p, and anything containing "low"
                   if (q === '480p' || q === '360p' || q.indexOf('low') !== -1) return false;
                   return true;
                 })
-                .map(function (src) { return buildStream(src, platform, resolved, content, episodeObj); })
-                .sort(function (a, b) { return qualitySortScore(b._quality) - qualitySortScore(a._quality); });
+                .map(function (src) { return buildStream(src, platform, resolved, content, episodeObj, fullCookieJar); });
 
-              console.log(PLUGIN_TAG + ' + ' + streams.length + ' stream(s) from ' + PLATFORM_LABEL[platform]);
-              return streams;
+              // Map them into our HEAD request validator
+              var validationPromises = rawStreams.map(function(streamData) {
+                  return checkStreamAlive(streamData);
+              });
+
+              // Wait for all HEAD requests to finish
+              return Promise.all(validationPromises).then(function(validatedStreams) {
+                
+                // Filter out the nulls (dead links) and sort the survivors by quality
+                var survivingStreams = validatedStreams
+                    .filter(Boolean)
+                    .sort(function (a, b) { return qualitySortScore(b._quality) - qualitySortScore(a._quality); });
+
+                console.log(PLUGIN_TAG + ' + ' + survivingStreams.length + ' validated stream(s) from ' + PLATFORM_LABEL[platform]);
+                return survivingStreams;
+              });
             });
         });
     });
@@ -782,11 +852,6 @@ function loadPlatformContent(platform, hit, resolved, season, episode, cookie) {
   });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Public API — getStreams
-// Nuvio calls: getStreams(tmdbId, type, season, episode)
-// ─────────────────────────────────────────────────────────────────────────────
-
 function getStreams(tmdbId, type, season, episode) {
   return __async(this, null, function* () {
     var s = season  ? parseInt(season)  : null;
@@ -794,7 +859,6 @@ function getStreams(tmdbId, type, season, episode) {
 
     console.log(PLUGIN_TAG + ' ID: ' + tmdbId + ' type: ' + type + (s ? ' S' + s + 'E' + e : ''));
 
-    // Step 1: resolve IDs + build search queue
     var resolved = yield resolveIds(tmdbId, type);
 
     if (!resolved.title) {
@@ -802,11 +866,8 @@ function getStreams(tmdbId, type, season, episode) {
       return [];
     }
 
-    // Step 2: auth bypass
     var cookie = yield bypass();
 
-    // Step 3: PARALLEL SEARCH
-    // We search all platforms simultaneously instead of waiting for one to fail.
     var platforms = ['netflix', 'primevideo', 'disney'];
     console.log(PLUGIN_TAG + ' Initiating parallel search across all platforms...');
 
@@ -819,8 +880,6 @@ function getStreams(tmdbId, type, season, episode) {
 
     var searchResults = yield Promise.all(searchPromises);
 
-    // Step 4: FIND THE PERFECT MATCH
-    // Iterate through all results to find the highest score.
     var maxScore = 0;
     searchResults.forEach(function(res) {
       if (res.hit && res.hit.score > maxScore) {
@@ -833,9 +892,6 @@ function getStreams(tmdbId, type, season, episode) {
       return [];
     }
 
-    // Filter down to ONLY the platform(s) that achieved this highest score.
-    // If Netflix and Prime both score 1.15, we load from both!
-
     var threshold = maxScore >= 1.0 ? 1.0 : maxScore;
     var winningResults = searchResults.filter(function(res) {
       return res.hit && res.hit.score >= threshold;
@@ -843,15 +899,12 @@ function getStreams(tmdbId, type, season, episode) {
 
     console.log(PLUGIN_TAG + ' 🏆 Perfect Match found on ' + winningResults.length + ' platform(s) (Max Score: ' + maxScore.toFixed(3) + ')');
 
-    // Step 5: LOAD STREAMS FOR WINNERS
-    // Run the heavy playlist extraction ONLY for the winning platform(s)
     var loadPromises = winningResults.map(function(res) {
       return loadPlatformContent(res.platform, res.hit, resolved, s, e, cookie);
     });
 
     var streamArrays = yield Promise.all(loadPromises);
     
-    // Flatten the results into a single array of streams
     var finalStreams = [];
     streamArrays.forEach(function(arr) {
       if (arr && arr.length) finalStreams = finalStreams.concat(arr);
