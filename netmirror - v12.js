@@ -61,7 +61,7 @@ module.exports = __toCommonJS(netmirror_exports);
 // ✨ TOGGLE 1 ✨
 // true  = Deep-dive playlist parsing (Checks for 29s dummy videos, slower)
 // false = Fast pass-through (no validation, fastest)
-var ENABLE_DEEP_VALIDATION = false;
+var ENABLE_DEEP_VALIDATION = true;
 
 // ✨ TOGGLE 2 ✨
 // true  = Resolve net52.cc master playlists to direct CDN sub-playlist URLs
@@ -281,8 +281,6 @@ function nmSetCachedStreams(tmdbId, type, season, episode, streams, ttl) {
 function resolveDirectCdnLink(streamObj) {
   if (!ENABLE_DIRECT_CDN_LINKS) return Promise.resolve(streamObj);
 
-  console.log(PLUGIN_TAG + ' [CDN RESOLVE] Fetching master: ' + streamObj.url);
-
   return fetch(streamObj.url, { method: 'GET', headers: streamObj.headers })
     .then(function (res) {
       if (!res.ok) return streamObj;
@@ -291,21 +289,20 @@ function resolveDirectCdnLink(streamObj) {
     .then(function (playlistText) {
       if (!playlistText || !playlistText.includes('#EXT-X-STREAM-INF')) return streamObj;
 
-      // Check if audio is separate
-      var isDemuxed = playlistText.includes('#EXT-X-MEDIA:TYPE=AUDIO');
+      // Extract the security token (?in=...)
+      var fullUrl = streamObj.url;
+      var token = fullUrl.includes('?') ? '?' + fullUrl.split('?')[1] : '';
       
+      // CLEANUP: Remove annoying lang=eng and hd=off tags from the token
+      token = token.replace(/&lang=[^&]*/g, '').replace(/\?lang=[^&]*&?/g, '?').replace(/&hd=off/g, '');
+
       var lines = playlistText.split('\n');
       var firstSubUrl = null;
-
-      // Find the first variant URL
       for (var i = 0; i < lines.length; i++) {
         if (lines[i].includes('#EXT-X-STREAM-INF')) {
           for (var j = i + 1; j < lines.length; j++) {
             var line = lines[j].trim();
-            if (line && !line.startsWith('#')) {
-              firstSubUrl = line;
-              break;
-            }
+            if (line && !line.startsWith('#')) { firstSubUrl = line; break; }
           }
           if (firstSubUrl) break;
         }
@@ -313,37 +310,29 @@ function resolveDirectCdnLink(streamObj) {
 
       if (!firstSubUrl) return streamObj;
 
-      // Build the absolute CDN URL
-      var absoluteCdnSub = firstSubUrl.startsWith('http') ? firstSubUrl : (streamObj.url.substring(0, streamObj.url.lastIndexOf('/') + 1) + firstSubUrl);
+      var absoluteSub = firstSubUrl.startsWith('http') ? firstSubUrl : (streamObj.url.substring(0, streamObj.url.lastIndexOf('/') + 1) + firstSubUrl);
 
-      if (isDemuxed) {
-        // --- THE MAGIC FIX ---
-        // We know the sub-playlist is at: .../files/ID/720p/720p.m3u8
-        // The CDN's OWN Master Playlist is usually one level up: .../files/ID/master.m3u8
-        // Or simply the folder above the quality: .../files/ID/video.m3u8
-        
-        // We extract the base CDN folder (e.g., https://s15.freecdn13.top/files/82180524/)
-        var cdnBase = absoluteCdnSub.split('/').slice(0, -2).join('/') + '/';
-        var cdnMaster = cdnBase + 'video.m3u8' + (absoluteCdnSub.includes('?') ? '?' + absoluteCdnSub.split('?')[1] : '');
+      // Force move to CDN root folder (e.g., .../files/81715676/)
+      var pathParts = absoluteSub.split('?')[0].split('/');
+      var cdnBase = pathParts.slice(0, -2).join('/') + '/';
+      
+      // We explicitly use 'index.m3u8' on the CDN. 
+      // This is the direct CDN Master that contains the Video + Audio mapping.
+      var cdnMaster = cdnBase + 'index.m3u8' + token;
 
-        console.log(PLUGIN_TAG + ' [CDN RESOLVE] Demuxed detected. Swapping to Direct CDN Master: ' + cdnMaster);
-        
-        // We quickly check if the CDN Master exists
-        return fetch(cdnMaster, { method: 'HEAD' }).then(function(headRes) {
-           if (headRes.ok) return Object.assign({}, streamObj, { url: cdnMaster });
-           // If video.m3u8 fails, try index.m3u8
-           return Object.assign({}, streamObj, { url: cdnBase + 'index.m3u8' });
-        }).catch(function() {
-           return streamObj; // Fallback to net52 if CDN master fails
-        });
-      }
-
-      // If NOT demuxed, just use the direct sub-playlist (standard behavior)
-      console.log(PLUGIN_TAG + ' [CDN RESOLVE] Simple CDN Link: ' + absoluteCdnSub);
-      return Object.assign({}, streamObj, { url: absoluteCdnSub });
+      console.log(PLUGIN_TAG + ' [CDN RESOLVE] Forced Direct CDN: ' + cdnMaster);
+      
+      // Verify the CDN Master exists before returning it
+      return fetch(cdnMaster, { method: 'HEAD', headers: streamObj.headers }).then(function(h) {
+         if (h.ok) {
+           return Object.assign({}, streamObj, { url: cdnMaster });
+         }
+         // Final fallback to the sub-playlist on the CDN if index.m3u8 is missing
+         var subCdn = absoluteSub.split('?')[0] + token;
+         return Object.assign({}, streamObj, { url: subCdn });
+      }).catch(function() { return streamObj; });
     });
 }
-
 
 function checkStreamAlive(streamObj) {
   // ==========================================
