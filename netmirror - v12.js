@@ -61,7 +61,7 @@ module.exports = __toCommonJS(netmirror_exports);
 // ✨ TOGGLE 1 ✨
 // true  = Deep-dive playlist parsing (Checks for 29s dummy videos, slower)
 // false = Fast pass-through (no validation, fastest)
-var ENABLE_DEEP_VALIDATION = true;
+var ENABLE_DEEP_VALIDATION = false;
 
 // ✨ TOGGLE 2 ✨
 // true  = Resolve net52.cc master playlists to direct CDN sub-playlist URLs
@@ -93,7 +93,7 @@ var CACHE_TTL_SECONDS    = 3600;   // seconds — how long the worker stores str
 
 
 var TMDB_API_KEY    = '439c478a771f35c05022f9feabcca01c';
-var NETMIRROR_BASE  = 'https://net52.cc';
+var NETMIRROR_BASE  = 'https://net22.cc';
 var NETMIRROR_PLAY  = 'https://net52.cc';
 var PLUGIN_TAG      = '[NetMirror]';
 
@@ -114,40 +114,40 @@ var _nmInFlight = {};
 var PLATFORM_OTT = { netflix: 'nf', primevideo: 'pv', disney: 'hs' };
 var PLATFORM_LABEL = { netflix: 'Netflix', primevideo: 'Prime Video', disney: 'Disney+' };
 
-// Switch to the working net52 CDN backend
-var NETMIRROR_BASE = 'https://net52.cc';
-var NETMIRROR_PLAY = 'https://net52.cc';
+var APP_USER_AGENT = 'Mozilla/5.0 (Linux; Android 16; CPH2723 Build/AP3A.240617.008; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/146.0.7680.178 Mobile Safari/537.36 /OS.Gatu v3.0';
 
 var SEARCH_ENDPOINT = {
-  netflix    : NETMIRROR_BASE + '/search.php',
-  primevideo : NETMIRROR_BASE + '/pv/search.php',
-  disney     : NETMIRROR_BASE + '/mobile/hs/search.php',
+  netflix    : NETMIRROR_PLAY + '/mobile/search.php',
+  primevideo : NETMIRROR_PLAY + '/mobile/pv/search.php',
+  disney     : NETMIRROR_PLAY + '/mobile/hs/search.php',
 };
 var EPISODES_ENDPOINT = {
-  netflix    : NETMIRROR_BASE + '/episodes.php',
-  primevideo : NETMIRROR_BASE + '/pv/episodes.php',
-  disney     : NETMIRROR_BASE + '/mobile/hs/episodes.php',
+  netflix    : NETMIRROR_PLAY + '/mobile/episodes.php',
+  primevideo : NETMIRROR_PLAY + '/mobile/pv/episodes.php',
+  disney     : NETMIRROR_PLAY + '/mobile/hs/episodes.php',
 };
 var POST_ENDPOINT = {
-  netflix    : NETMIRROR_BASE + '/mobile/post.php',
-  primevideo : NETMIRROR_BASE + '/mobile/pv/post.php',
-  disney     : NETMIRROR_BASE + '/mobile/hs/post.php',
-};
-var PLAYLIST_ENDPOINT = {
-  netflix    : NETMIRROR_PLAY + '/mobile/playlist.php',
-  primevideo : NETMIRROR_PLAY + '/mobile/pv/playlist.php',
-  disney     : NETMIRROR_PLAY + '/mobile/hs/playlist.php',
+  netflix    : NETMIRROR_PLAY + '/mobile/post.php',
+  primevideo : NETMIRROR_PLAY + '/mobile/pv/post.php',
+  disney     : NETMIRROR_PLAY + '/mobile/hs/post.php',
 };
 
-// CRITICAL: The mobile API demands these exact headers to bypass the HTML block.
 var BASE_HEADERS = {
-  'User-Agent'         : 'Mozilla/5.0 (Linux; Android 16; CPH2723 Build/AP3A.240617.008; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/146.0.7680.178 Mobile Safari/537.36 /OS.Gatu v3.0',
-  'Accept'             : 'application/json, text/plain, */*',
-  'Accept-Language'    : 'en-US,en;q=0.9',
-  'X-Requested-With'   : 'app.netmirror.netmirrornew', 
-  'sec-ch-ua-platform' : '"Android"',
-  'Connection'         : 'keep-alive',
+  'User-Agent'       : APP_USER_AGENT,
+  'Accept'           : 'application/json, text/plain, */*',
+  'Accept-Language'  : 'en-US,en;q=0.9',
+  'X-Requested-With' : 'app.netmirror.netmirrornew',
+  'Origin'           : NETMIRROR_PLAY,
+  'Referer'          : NETMIRROR_PLAY + '/',
+  'Connection'       : 'keep-alive',
 };
+
+var base64Encode = function(str) {
+  if (typeof btoa === 'function') return btoa(unescape(encodeURIComponent(str)));
+  if (typeof Buffer !== 'undefined') return new Buffer(str, 'utf-8').toString('base64');
+  return '';
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Utilities
 // ─────────────────────────────────────────────────────────────────────────────
@@ -271,202 +271,6 @@ function nmSetCachedStreams(tmdbId, type, season, episode, streams, ttl) {
   .catch(function (err) {
     console.log(PLUGIN_TAG + ' [CACHE] Save error: ' + err.message);
     return false;
-  });
-}
-
-
-// Fetches the net52.cc master playlist and swaps the stream URL for the direct
-// CDN sub-playlist URL that matches the stream's quality label.
-// ─────────────────────────────────────────────────────────────────────────────
-function resolveDirectCdnLink(streamObj) {
-  if (!ENABLE_DIRECT_CDN_LINKS) return Promise.resolve(streamObj);
-
-  return fetch(streamObj.url, { method: 'GET', headers: streamObj.headers })
-    .then(function (res) {
-      if (!res.ok) return streamObj;
-      return res.text();
-    })
-    .then(function (playlistText) {
-      if (!playlistText || !playlistText.includes('#EXT-X-STREAM-INF')) return streamObj;
-
-      // Extract the security token (?in=...)
-      var fullUrl = streamObj.url;
-      var token = fullUrl.includes('?') ? '?' + fullUrl.split('?')[1] : '';
-      
-      // CLEANUP: Remove annoying lang=eng and hd=off tags from the token
-      token = token.replace(/&lang=[^&]*/g, '').replace(/\?lang=[^&]*&?/g, '?').replace(/&hd=off/g, '');
-
-      var lines = playlistText.split('\n');
-      var firstSubUrl = null;
-      for (var i = 0; i < lines.length; i++) {
-        if (lines[i].includes('#EXT-X-STREAM-INF')) {
-          for (var j = i + 1; j < lines.length; j++) {
-            var line = lines[j].trim();
-            if (line && !line.startsWith('#')) { firstSubUrl = line; break; }
-          }
-          if (firstSubUrl) break;
-        }
-      }
-
-      if (!firstSubUrl) return streamObj;
-
-      var absoluteSub = firstSubUrl.startsWith('http') ? firstSubUrl : (streamObj.url.substring(0, streamObj.url.lastIndexOf('/') + 1) + firstSubUrl);
-
-      // Force move to CDN root folder (e.g., .../files/81715676/)
-      var pathParts = absoluteSub.split('?')[0].split('/');
-      var cdnBase = pathParts.slice(0, -2).join('/') + '/';
-      
-      // We explicitly use 'index.m3u8' on the CDN. 
-      // This is the direct CDN Master that contains the Video + Audio mapping.
-      var cdnMaster = cdnBase + 'index.m3u8' + token;
-
-      console.log(PLUGIN_TAG + ' [CDN RESOLVE] Forced Direct CDN: ' + cdnMaster);
-      
-      // Verify the CDN Master exists before returning it
-      return fetch(cdnMaster, { method: 'HEAD', headers: streamObj.headers }).then(function(h) {
-         if (h.ok) {
-           return Object.assign({}, streamObj, { url: cdnMaster });
-         }
-         // Final fallback to the sub-playlist on the CDN if index.m3u8 is missing
-         var subCdn = absoluteSub.split('?')[0] + token;
-         return Object.assign({}, streamObj, { url: subCdn });
-      }).catch(function() { return streamObj; });
-    });
-}
-
-function checkStreamAlive(streamObj) {
-  // ==========================================
-  // FAST MODE (ENABLE_DEEP_VALIDATION = false)
-  // ==========================================
-  if (!ENABLE_DEEP_VALIDATION) {
-    return Promise.resolve(streamObj);
-  }
-
-  // ==========================================
-  // PERMISSIVE MODE (ENABLE_DEEP_VALIDATION = true)
-  // Only confirmed dummy videos (< 60s) are dropped.
-  // Everything else is sent to the app.
-  // ==========================================
-  return fetch(streamObj.url, {
-    method: 'GET',
-    headers: streamObj.headers
-  })
-  .then(function(res) {
-    if (!res.ok) {
-       console.warn(PLUGIN_TAG + ' [HTTP ' + res.status + '] Cannot validate, but sending to app.');
-       return streamObj;
-    }
-    return res.text();
-  })
-  .then(function(playlistText) {
-    if (!playlistText) return streamObj; // Pass to app if empty
-
-    // Helper to calculate total duration from a playlist body
-    function calcDuration(text) {
-        var extinfRegex = /#EXTINF:(\d+(?:\.\d+)?)/g;
-        var match;
-        var total = 0;
-        var count = 0;
-        while ((match = extinfRegex.exec(text)) !== null) {
-            total += parseFloat(match[1]);
-            count++;
-        }
-        return { total: total, count: count };
-    }
-
-    // SCENARIO 1: It is already a Media Playlist
-    if (playlistText.includes('#EXTINF:')) {
-        var d = calcDuration(playlistText);
-        console.log(PLUGIN_TAG + ' [MEDIA PLAYLIST] Duration: ' + d.total.toFixed(2) + 's (' + d.count + ' segments)');
-
-        // The ONLY time we drop a link: confirmed dummy video
-        if (d.total < 60 && d.total > 0) {
-            console.warn(PLUGIN_TAG + ' [DUMMY VIDEO DETECTED] Duration ' + d.total.toFixed(2) + 's. Dropping.');
-            return null;
-        }
-        console.log(PLUGIN_TAG + ' [VALIDATED] ' + streamObj.url);
-        return streamObj;
-    }
-
-    // SCENARIO 2: It is a Master Playlist. We must dig deeper.
-    else if (playlistText.includes('#EXT-X-STREAM-INF')) {
-        console.log(PLUGIN_TAG + ' [MASTER PLAYLIST] Found. Digging for sub-playlist...');
-
-        var lines = playlistText.split('\n');
-        var subUrl = null;
-
-        // Find the first URL right after an #EXT-X-STREAM-INF tag
-        for (var i = 0; i < lines.length; i++) {
-            if (lines[i].includes('#EXT-X-STREAM-INF')) {
-                for (var j = i + 1; j < lines.length; j++) {
-                    var line = lines[j].trim();
-                    if (line && !line.startsWith('#')) {
-                        subUrl = line;
-                        break;
-                    }
-                }
-                if (subUrl) break;
-            }
-        }
-
-        if (!subUrl) {
-            console.warn(PLUGIN_TAG + ' [MASTER PLAYLIST] Cannot extract sub-playlist, sending to app.');
-            return streamObj;
-        }
-
-        // Build the absolute URL for the sub-playlist
-        var absoluteSubUrl = subUrl;
-        if (!subUrl.startsWith('http')) {
-            if (subUrl.startsWith('/')) {
-                // If it starts with a single slash, attach to base domain
-                var domainMatch = streamObj.url.match(/^(https?:\/\/[^\/]+)/);
-                absoluteSubUrl = (domainMatch ? domainMatch[1] : NETMIRROR_PLAY) + subUrl;
-            } else {
-                // Relative path (e.g., "video_1080p.m3u8") - attach to current path folder
-                var basePath = streamObj.url.substring(0, streamObj.url.lastIndexOf('/') + 1);
-                absoluteSubUrl = basePath + subUrl;
-            }
-        }
-
-        console.log(PLUGIN_TAG + ' [SUB-PLAYLIST] Fetching: ' + absoluteSubUrl);
-
-        // Fetch the Sub-Playlist
-        return fetch(absoluteSubUrl, {
-            method: 'GET',
-            headers: streamObj.headers
-        })
-        .then(function(subRes) {
-             if (!subRes.ok) throw new Error('Sub-playlist HTTP ' + subRes.status);
-             return subRes.text();
-        })
-        .then(function(subText) {
-             var subD = calcDuration(subText);
-             console.log(PLUGIN_TAG + ' [SUB-PLAYLIST] Duration: ' + subD.total.toFixed(2) + 's (' + subD.count + ' segments)');
-
-             // The ONLY time we drop inside a master playlist: confirmed dummy video
-             if (subD.total < 60 && subD.total > 0) {
-                 console.warn(PLUGIN_TAG + ' [DUMMY VIDEO DETECTED inside Master] Duration ' + subD.total.toFixed(2) + 's. Dropping.');
-                 return null;
-             }
-
-             console.log(PLUGIN_TAG + ' [VALIDATED] ' + streamObj.url);
-             return streamObj; // Return the ORIGINAL Master Playlist object to Nuvio
-        })
-        .catch(function(e) {
-             console.warn(PLUGIN_TAG + ' [SUB-PLAYLIST ERROR] ' + e.message + ' -> Sending to app anyway.');
-             return streamObj;
-        });
-    }
-
-    // SCENARIO 3: Unknown format — send to app anyway
-    else {
-         console.warn(PLUGIN_TAG + ' [UNKNOWN FORMAT] Sending to app anyway.');
-         return streamObj;
-    }
-  })
-  .catch(function(err) {
-    console.warn(PLUGIN_TAG + ' [NETWORK ERROR] ' + err.message + ' -> Sending to app anyway.');
-    return streamObj;
   });
 }
 
@@ -726,8 +530,8 @@ function resolveIds(rawId, type) {
 
 function searchPlatform(searchQueue, year, platform, cookie, isTv) {
   var ott  = PLATFORM_OTT[platform];
-  var jar  = makeCookieString({ t_hash_t: cookie.t_hash_t, t_hash: cookie.t_hash, hd: 'on', ott: ott });
-  var hdrs = Object.assign({}, BASE_HEADERS, { Cookie: jar, Referer: NETMIRROR_BASE + '/home' });
+  var jar  = makeCookieString({ t_hash_t: cookie, user_token: '233123f803cf02184bf6c67e149cdd50', hd: 'on', ott: ott });
+  var hdrs = Object.assign({}, BASE_HEADERS, { Cookie: jar, Referer: NETMIRROR_BASE + '/tv/home' });
 
   function doSearch(originalQuery, searchQuery) {
     var url = SEARCH_ENDPOINT[platform] + '?s=' + encodeURIComponent(searchQuery) + '&t=' + unixNow();
@@ -750,13 +554,15 @@ function searchPlatform(searchQueue, year, platform, cookie, isTv) {
             best = { id: item.id, title: item.t, score: rank };
         });
         return best;
-      }).catch(function () { return null; });
+      })
+      .catch(function () { return null; });
   }
 
   var pairs = [];
   searchQueue.forEach(function (q) {
     pairs.push({ original: q, search: q });
-    if (year && !q.includes(year)) pairs.push({ original: q, search: q + ' ' + year });
+    if (year && !q.includes(year))
+      pairs.push({ original: q, search: q + ' ' + year });
   });
 
   return Promise.all(pairs.map(function (p) { return doSearch(p.original, p.search); }))
@@ -766,54 +572,36 @@ function searchPlatform(searchQueue, year, platform, cookie, isTv) {
         if (!hit) return;
         if (!best || hit.score > best.score) best = hit;
       });
-      if (best) console.log(PLUGIN_TAG + ' [' + platform + '] Best: "' + best.title + '" score=' + best.score.toFixed(3));
-      else console.log(PLUGIN_TAG + ' [' + platform + '] No match above threshold (0.72)');
+      if (best)
+        console.log(PLUGIN_TAG + ' [' + platform + '] Best: "' + best.title + '" score=' + best.score.toFixed(3));
+      else
+        console.log(PLUGIN_TAG + ' [' + platform + '] No match above threshold (0.72)');
       return best;
     });
 }
 
 function bypass() {
   var now = Date.now();
-  if (_cachedCookie && _cachedCookie.t_hash_t && _cachedCookie.t_hash && (now - _cookieTimestamp) < COOKIE_EXPIRY_MS) {
-    console.log(PLUGIN_TAG + ' Using cached auth cookies.');
+  if (_cachedCookie && (now - _cookieTimestamp) < COOKIE_EXPIRY_MS) {
+    console.log(PLUGIN_TAG + ' Using cached auth cookie.');
     return Promise.resolve(_cachedCookie);
   }
-  console.log(PLUGIN_TAG + ' Bypassing authentication (Fetching Desktop & Mobile tokens)...');
-  
+  console.log(PLUGIN_TAG + ' Bypassing authentication...');
   function attempt(n) {
     if (n >= 5) return Promise.reject(new Error('Bypass failed after 5 attempts'));
-    
-    // Step 1: Get Desktop Token (required for the video 'in=' parameter)
     return fetch(NETMIRROR_PLAY + '/tv/p.php', { method: 'POST', redirect: 'follow', headers: BASE_HEADERS })
-      .then(function(res1) {
-        var raw1 = res1.headers.get('set-cookie') || '';
-        var m1 = (Array.isArray(raw1) ? raw1.join('; ') : raw1).match(/t_hash_t=([^;,\s]+)/);
-        var t_hash_t = m1 ? m1[1] : null;
-
-        // Step 2: Get Mobile Token (required to bypass HTML block)
-        return fetch(NETMIRROR_PLAY + '/mobile/p.php', { 
-          method: 'POST', 
-          redirect: 'follow', 
-          headers: Object.assign({}, BASE_HEADERS, {
-              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-              'X-Requested-With': 'XMLHttpRequest'
-          }),
-          body: 'hash=ffb1d9b5ba49418751b3d03f051b456d%3A%3A4166207771%3A%3Ani'
-        })
-        .then(function(res2) {
-           var raw2 = res2.headers.get('set-cookie') || '';
-           var m2 = (Array.isArray(raw2) ? raw2.join('; ') : raw2).match(/t_hash=([^;,\s]+)/);
-           var t_hash = m2 ? m2[1] : null;
-
-           return res2.text().then(function(body) {
-              if (!body.includes('"r":"n"')) return attempt(n + 1);
-              if (!t_hash_t || !t_hash) return attempt(n + 1);
-              
-              _cachedCookie = { t_hash_t: t_hash_t, t_hash: t_hash };
-              _cookieTimestamp = Date.now();
-              console.log(PLUGIN_TAG + ' Auth successful. Both cookies set.');
-              return _cachedCookie;
-           });
+      .then(function (res) {
+        var raw = res.headers.get('set-cookie') || '';
+        var cs  = Array.isArray(raw) ? raw.join('; ') : raw;
+        var m   = cs.match(/t_hash_t=([^;,\s]+)/);
+        var ext = m ? m[1] : null;
+        return res.text().then(function (body) {
+          if (!body.includes('"r":"n"')) { return attempt(n + 1); }
+          if (!ext) throw new Error('t_hash_t not found in Set-Cookie');
+          _cachedCookie    = ext;
+          _cookieTimestamp = Date.now();
+          console.log(PLUGIN_TAG + ' Auth successful.');
+          return _cachedCookie;
         });
       });
   }
@@ -822,8 +610,8 @@ function bypass() {
 
 function loadContent(contentId, platform, cookie) {
   var ott  = PLATFORM_OTT[platform];
-  var jar  = makeCookieString({ t_hash: cookie.t_hash, t_hash_t: cookie.t_hash_t, ott: ott, hd: 'on' });
-  var hdrs = Object.assign({}, BASE_HEADERS, { Cookie: jar, Referer: NETMIRROR_BASE + '/home' });
+  var jar  = makeCookieString({ t_hash_t: cookie, user_token: '233123f803cf02184bf6c67e149cdd50', ott: ott, hd: 'on' });
+  var hdrs = Object.assign({}, BASE_HEADERS, { Cookie: jar, Referer: NETMIRROR_BASE + '/tv/home' });
   return request(POST_ENDPOINT[platform] + '?id=' + contentId + '&t=' + unixNow(), { headers: hdrs })
     .then(function (res) { return res.json(); })
     .then(function (data) {
@@ -844,8 +632,8 @@ function loadContent(contentId, platform, cookie) {
 
 function fetchMoreEpisodes(contentId, seasonId, platform, cookie, startPage) {
   var ott  = PLATFORM_OTT[platform];
-  var jar  = makeCookieString({ t_hash: cookie.t_hash, t_hash_t: cookie.t_hash_t, ott: ott, hd: 'on' });
-  var hdrs = Object.assign({}, BASE_HEADERS, { Cookie: jar, Referer: NETMIRROR_BASE + '/home' });
+  var jar  = makeCookieString({ t_hash_t: cookie, user_token: '233123f803cf02184bf6c67e149cdd50', ott: ott, hd: 'on' });
+  var hdrs = Object.assign({}, BASE_HEADERS, { Cookie: jar, Referer: NETMIRROR_BASE + '/tv/home' });
   var collected = [];
   function page(n) {
     return request(
@@ -859,40 +647,6 @@ function fetchMoreEpisodes(contentId, seasonId, platform, cookie, startPage) {
   }
   return page(startPage || 2);
 }
-
-function getPlaylist(contentId, title, platform, cookie) {
-  var ott = PLATFORM_OTT[platform];
-  var jar = makeCookieString({ t_hash: cookie.t_hash, t_hash_t: cookie.t_hash_t, ott: ott, hd: 'on' });
-  var url = PLAYLIST_ENDPOINT[platform]
-    + '?id='  + contentId
-    + '&t='   + encodeURIComponent(title)
-    + '&tm='  + unixNow();
-  return request(url, {
-    headers: Object.assign({}, BASE_HEADERS, { Cookie: jar, Referer: NETMIRROR_PLAY + '/' }),
-  }).then(function (res) { return res.json(); })
-    .then(function (playlist) {
-      if (!Array.isArray(playlist) || !playlist.length) return { sources: [], subtitles: [] };
-      var sources = [], subtitles = [];
-      playlist.forEach(function (item) {
-        (item.sources || []).forEach(function (src) {
-          var u = src.file || '';
-          u = u.replace('/tv/', '/');
-          if (!u.startsWith('/')) u = '/' + u;
-          u = NETMIRROR_PLAY + u;
-          if (u) sources.push({ url: u, quality: src.label || '', type: src.type || 'application/x-mpegURL' });
-        });
-        (item.tracks || []).filter(function (t) { return t.kind === 'captions'; }).forEach(function (track) {
-          var s = track.file || '';
-          if (s.startsWith('//')) s = 'https:' + s;
-          else if (s.startsWith('/')) s = NETMIRROR_PLAY + s;
-          if (s) subtitles.push({ url: s, language: track.label || 'Unknown' });
-        });
-      });
-      console.log(PLUGIN_TAG + ' Playlist: ' + sources.length + ' src, ' + subtitles.length + ' subs.');
-      return { sources: sources, subtitles: subtitles };
-    });
-}
-
 
 function findEpisode(episodes, targetSeason, targetEpisode) {
   var s = parseInt(targetSeason), e = parseInt(targetEpisode);
@@ -911,41 +665,93 @@ function findEpisode(episodes, targetSeason, targetEpisode) {
   }) || null;
 }
 
-function buildStream(source, platform, resolved, content, episodeData, fullCookieJar) {
-  var quality   = parseQuality(source);
-  var platLabel = PLATFORM_LABEL[platform] || platform;
-  var langStr   = formatLangs(content.langs);
+function resolveMobileStreams(targetId, title, platform, cookie, lang, contentObj, episodeObj) {
+  var ott = PLATFORM_OTT[platform];
+  var timestamp = unixNow();
+  var appHeaders = Object.assign({}, BASE_HEADERS, { Cookie: 't_hash_t=' + cookie + '; ott=' + ott + '; hd=on' });
+  var masterUrl = '';
 
-  var titleLine = content.title || resolved.title;
-  var yearStr   = content.year || resolved.year;
-  if (yearStr) titleLine += ' (' + yearStr + ')';
+  var buildPromise = Promise.resolve();
 
-  if (resolved.isTv && episodeData) {
-    var sNum = String(episodeData.s  || episodeData.season  || episodeData.season_number  || '').replace(/\D/g, '');
-    var eNum = String(episodeData.ep || episodeData.episode || episodeData.episode_number || '').replace(/\D/g, '');
-    titleLine += ' - S' + sNum + 'E' + eNum;
-    if (episodeData.t) titleLine += ' - ' + decodeHtmlEntities(episodeData.t);
+  // Route to the correct Mobile App HLS endpoint
+  if (platform === 'netflix') {
+    masterUrl = NETMIRROR_PLAY + '/mobile/hls/' + targetId + '.m3u8?in=' + cookie + '&hd=on&lang=' + (lang || 'hin');
+  } else {
+    // Both Prime Video and Disney+ use playlist.php endpoints that return JSON, not direct M3U8s
+    var playlistApiUrl = '';
+    if (platform === 'primevideo') {
+      playlistApiUrl = NETMIRROR_PLAY + '/mobile/pv/playlist.php?id=' + targetId + '&t=' + encodeURIComponent(title) + '&tm=' + timestamp + '&lang=' + (lang || 'hin') + '&hd=on&userhash=' + cookie;
+    } else if (platform === 'disney') {
+      playlistApiUrl = NETMIRROR_PLAY + '/mobile/hs/playlist.php?id=' + targetId + '&t=' + encodeURIComponent(title) + '&tm=' + timestamp;
+    }
+
+    buildPromise = request(playlistApiUrl, { headers: appHeaders })
+      .then(function(res) { return res.json(); })
+      .then(function(json) {
+        if (json && json[0] && json[0].sources && json[0].sources[0]) {
+          var fileUrl = json[0].sources[0].file;
+          // Ensure URL is absolute before passing it to the player
+          if (!fileUrl.startsWith('http')) {
+            if (!fileUrl.startsWith('/')) fileUrl = '/' + fileUrl;
+            masterUrl = NETMIRROR_PLAY + fileUrl;
+          } else {
+            masterUrl = fileUrl;
+          }
+        } else {
+           // Fallback for Disney
+           if (platform === 'disney') masterUrl = NETMIRROR_PLAY + '/mobile/hs/hls/' + targetId + '.m3u8?in=' + cookie;
+        }
+      }).catch(function(e) {
+        console.log(PLUGIN_TAG + ' [Playlist JSON Error] ' + e.message);
+        if (platform === 'disney') masterUrl = NETMIRROR_PLAY + '/mobile/hs/hls/' + targetId + '.m3u8?in=' + cookie;
+      });
   }
 
-  var lines = [titleLine];
-  if (langStr)         lines.push(langStr);
+  return buildPromise.then(function() {
+    if (!masterUrl) return [];
 
-  return {
-    name    : platLabel + ' | ' + quality,
-    title   : lines.join('\n'),
-    url     : source.url,
-    _quality : quality,
-    type    : 'hls',
-    headers : {
-      'User-Agent'      : 'Mozilla/5.0 (Android) ExoPlayer',
-      'Accept'          : '*/*',
-      'Accept-Encoding' : 'identity',
-      'Connection'      : 'keep-alive',
-      'Cookie'          : 'hd=on',
-      'Referer'         : NETMIRROR_PLAY + '/',
-    },
-    behaviorHints: { bingeGroup: 'netmirror-' + platform },
-  };
+    var platLabel = PLATFORM_LABEL[platform] || platform;
+    var displayTitle = title;
+    if (contentObj.year) displayTitle += ' (' + contentObj.year + ')';
+    if (episodeObj) {
+      var sNum = String(episodeObj.s || episodeObj.season || '').replace(/\D/g, '');
+      var eNum = String(episodeObj.ep || episodeObj.episode || '').replace(/\D/g, '');
+      displayTitle += ' - S' + sNum + 'E' + eNum;
+      if (episodeObj.t) displayTitle += ' - ' + decodeHtmlEntities(episodeObj.t);
+    }
+
+    var streams = [];
+
+    // SOLUTION A: Native Master Playlist (Passes App Headers to the player so Net52.cc allows it)
+    streams.push({
+      name: platLabel + ' (Master)',
+      title: displayTitle + '\nAuto (Demuxed HD)',
+      url: masterUrl,
+      isM3U8: true,
+      headers: appHeaders,
+      behaviorHints: { bingeGroup: 'netmirror-' + platform }
+    });
+
+    // SOLUTION B: Data URI Proxy (Downloads text, base64 encodes it, passes as URI. Player bypasses Net52.cc headers entirely)
+    return request(masterUrl, { headers: appHeaders })
+      .then(function(res) { return res.text(); })
+      .then(function(m3u8Text) {
+        if (m3u8Text && m3u8Text.includes('#EXTM3U')) {
+          var base64M3u8 = base64Encode(m3u8Text);
+          streams.push({
+            name: platLabel + ' (Proxy)',
+            title: displayTitle + '\nAuto (Demuxed Proxy Fallback)',
+            url: "data:application/vnd.apple.mpegurl;base64," + base64M3u8,
+            isM3U8: true,
+            behaviorHints: { bingeGroup: 'netmirror-' + platform }
+          });
+        }
+        return streams;
+      }).catch(function(e) {
+        console.log(PLUGIN_TAG + ' [Proxy Gen Failed] ' + e.message);
+        return streams;
+      });
+  });
 }
 
 function loadPlatformContent(platform, hit, resolved, season, episode, cookie) {
@@ -984,42 +790,15 @@ function loadPlatformContent(platform, hit, resolved, season, episode, cookie) {
         console.log(PLUGIN_TAG + ' Episode ID: ' + targetId);
       }
 
-      // Mobile API bypasses the iframe token generation and passes the auth cookie hash directly
-      return getPlaylist(targetId, resolved.title, platform, cookie)
-        .then(function (playlist) {
-          if (!playlist || !playlist.sources || !playlist.sources.length) {
-            console.log(PLUGIN_TAG + ' No sources'); return null;
-          }
-
-          var fullCookieJar = makeCookieString({ t_hash: cookie, ott: PLATFORM_OTT[platform], hd: 'on' });
-
-          // Build all stream objects first
-          var rawStreams = playlist.sources
-            .filter(function(src) {
-              var q = parseQuality(src).toLowerCase();
-              if (q === '480p' || q === '360p' || q.indexOf('low') !== -1) return false;
-              return true;
-            })
-            .map(function (src) { return buildStream(src, platform, resolved, content, episodeObj, fullCookieJar); });
-
-          // Resolve net52.cc master URL -> direct CDN URL, then validate
-          var validationPromises = rawStreams.map(function(streamData) {
-              return resolveDirectCdnLink(streamData).then(function(resolved) {
-                  return checkStreamAlive(resolved);
-              });
-          });
-
-          // Wait for all HEAD requests to finish
-          return Promise.all(validationPromises).then(function(validatedStreams) {
-            
-            // Filter out the nulls (dead links) and sort the survivors by quality
-            var survivingStreams = validatedStreams
-                .filter(Boolean)
-                .sort(function (a, b) { return qualitySortScore(b._quality) - qualitySortScore(a._quality); });
-
-            console.log(PLUGIN_TAG + ' + ' + survivingStreams.length + ' validated stream(s) from ' + PLATFORM_LABEL[platform]);
-            return survivingStreams;
-          });
+      // Generate Dual Streams (Solution A + B) via Mobile App endpoints
+      return resolveMobileStreams(targetId, resolved.title, platform, cookie, 'hin', content, episodeObj)
+        .then(function(streams) {
+            if (streams && streams.length > 0) {
+                console.log(PLUGIN_TAG + ' + ' + streams.length + ' Mobile App stream(s) generated from ' + PLATFORM_LABEL[platform]);
+            } else {
+                console.log(PLUGIN_TAG + ' No streams generated.');
+            }
+            return streams;
         });
     });
   }).catch(function (err) {
