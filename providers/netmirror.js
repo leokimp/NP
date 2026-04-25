@@ -518,10 +518,11 @@ function getPlaylist(contentId, title, platform, cookie) {
   if (platform === "primevideo") {
     qs += "&lang=" + PREFERRED_AUDIO_LANG + "&hd=on&userhash=" + encodeURIComponent(cookie);
   }
-  var url = NM_BASE + MOBILE_PATH[platform] + "/playlist.php" + qs;
-  console.log(PLUGIN_TAG + " [playlist] " + url);
-  return fetch(url, {
-    headers: Object.assign({}, APP_HEADERS, { Cookie: jar })
+  var originalUrl = NM_BASE + MOBILE_PATH[platform] + "/playlist.php" + qs;
+  var proxiedUrl = PROXY_WORKER_URL + "/proxy?url=" + encodeURIComponent(originalUrl);
+  console.log(PLUGIN_TAG + " [playlist] " + proxiedUrl);
+  return fetch(proxiedUrl, {
+    headers: Object.assign({}, APP_HEADERS, { "X-NM-Cookie": jar })
   }).then(function(res) {
     if (!res.ok)
       throw new Error("playlist HTTP " + res.status);
