@@ -48,7 +48,7 @@ __export(netmirror_exports, { getStreams: function() {
 module.exports = __toCommonJS(netmirror_exports);
 var PREFERRED_AUDIO_LANG = "hin";
 var ENABLE_PROXY = true;
-var PROXY_WORKER_URL = "https://hls.leokimpese.workers.dev";
+var PROXY_WORKER_URL = "https://hlspxy.dpdns.org";
 var ENABLE_STREAM_CACHE = false;
 var CACHE_WORKER_URL = "https://cache.leokimpese.workers.dev";
 var CACHE_TTL_SECONDS = 3600;
