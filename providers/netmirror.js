@@ -53,51 +53,61 @@ var ENABLE_STREAM_CACHE = false;
 var CACHE_WORKER_URL = "https://cache.leokimpese.workers.dev";
 var CACHE_TTL_SECONDS = 3600;
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-var NM_BASE = "https://net52.cc";
-var PLUGIN_TAG = "[NetMirror v12.1]";
+
+var PLUGIN_TAG = "[NetMirror TV v1.0]";
 var COOKIE_EXPIRY_MS = 15 * 60 * 60 * 1e3;
-var _cachedCookie = "";
-var _cookieTimestamp = 0;
+var API_EXPIRY_MS = 24 * 60 * 60 * 1e3; 
+var _cachedToken = "";
+var _tokenTimestamp = 0;
+var _dynamicApiBase = "https://tv.imgcdn.kim"; // Fallback URL
+var _apiBaseTimestamp = 0;
 var _nmInFlight = {};
 var PLATFORM_OTT = { netflix: "nf", primevideo: "pv", disney: "hs" };
 var PLATFORM_LABEL = { netflix: "Netflix", primevideo: "Prime Video", disney: "JioHotstar" };
-var MOBILE_PATH = {
-  netflix: "/mobile",
-  primevideo: "/mobile/pv",
-  disney: "/mobile/hs"
-};
-var APP_UA = "Mozilla/5.0 (Linux; Android 16; CPH2723 Build/AP3A.240617.008; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/146.0.7680.178 Mobile Safari/537.36 /OS.Gatu v3.0";
+var APP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0 /OS.GatuNewTV v1.0";
 var API_HEADERS = {
   "User-Agent": APP_UA,
-  "Accept": "*/*",
-  "Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8",
-  "X-Requested-With": "XMLHttpRequest",
-  "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Android WebView";v="146"',
-  "sec-ch-ua-mobile": "?1",
-  "sec-ch-ua-platform": '"Android"',
-  "sec-fetch-site": "same-origin",
-  "sec-fetch-mode": "cors",
-  "sec-fetch-dest": "empty",
-  "Referer": NM_BASE + "/mobile/home?app=1"
+  "Accept": "application/json, text/plain, */*",
+  "X-Requested-With": "NetmirrorNewTV v1.0"
 };
-var APP_HEADERS = {
-  "User-Agent": APP_UA,
-  "Accept": "*/*",
-  "Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8",
-  "X-Requested-With": "app.netmirror.netmirrornew",
-  "sec-fetch-mode": "cors",
-  "sec-fetch-dest": "empty",
-  "Referer": NM_BASE + "/mobile/home?app=1"
-};
-var CDN_HEADERS = {
-  "User-Agent": APP_UA,
-  "Origin": NM_BASE,
-  "Referer": NM_BASE + "/",
-  "X-Requested-With": "app.netmirror.netmirrornew",
-  "Sec-Fetch-Site": "cross-site",
-  "Sec-Fetch-Mode": "cors",
-  "Sec-Fetch-Dest": "empty"
-};
+
+// [ADD NEW FUNCTION ANYWHERE ABOVE bypass()]
+// Polyfill for Base64 Decode to ensure Hermes compatibility
+function decodeBase64(str) {
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+  var output = '';
+  str = String(str).replace(/=+$/, '');
+  for (var bc = 0, bs, buffer, idx = 0; buffer = str.charAt(idx++); ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) ? output += String.fromCharCode(255 & bs >> (-2 * bc & 6)) : 0) {
+      buffer = chars.indexOf(buffer);
+  }
+  return output;
+}
+
+function getApiBase() {
+  var now = Date.now();
+  if (_dynamicApiBase && (now - _apiBaseTimestamp < API_EXPIRY_MS)) {
+    return Promise.resolve(_dynamicApiBase);
+  }
+  console.log(PLUGIN_TAG + " Checking dynamic TV API base...");
+  return fetch("https://mobiledetects.com/checknewtv.php", {
+    method: "GET",
+    headers: API_HEADERS
+  }).then(function(res) {
+    return res.json();
+  }).then(function(data) {
+    if (data && data.token_hash) {
+      _dynamicApiBase = decodeBase64(data.token_hash);
+      _apiBaseTimestamp = Date.now();
+      console.log(PLUGIN_TAG + " TV API Base Updated: " + _dynamicApiBase);
+      return _dynamicApiBase;
+    }
+    return _dynamicApiBase;
+  }).catch(function() {
+    console.log(PLUGIN_TAG + " Failed to check API base, using fallback: " + _dynamicApiBase);
+    return _dynamicApiBase;
+  });
+}
+
 function unixNow() {
   return Math.floor(Date.now() / 1e3);
 }
@@ -175,38 +185,44 @@ function nmSetCachedStreams(tmdbId, type, season, episode, streams) {
   }).catch(function() {
   });
 }
+function resetAuthCache() {
+  console.log(PLUGIN_TAG + " [AUTH FAILED] Flushing API and Token caches...");
+  _apiBaseTimestamp = 0;
+  _tokenTimestamp = 0;
+  _cachedToken = "";
+}
+
 function bypass() {
   var now = Date.now();
-  if (_cachedCookie && now - _cookieTimestamp < COOKIE_EXPIRY_MS) {
-    console.log(PLUGIN_TAG + " Using cached cookie");
-    return Promise.resolve(_cachedCookie);
+  
+  // 1. Checks if token is valid (Expires automatically after COOKIE_EXPIRY_MS)
+  if (_cachedToken && now - _tokenTimestamp < COOKIE_EXPIRY_MS) {
+    return Promise.resolve(_cachedToken);
   }
-  console.log(PLUGIN_TAG + " Bypassing auth...");
-  function attempt(n) {
-    if (n >= 5)
-      return Promise.reject(new Error("Bypass failed after 5 attempts"));
-    return fetch(NM_BASE + "/tv/p.php", {
-      method: "POST",
-      redirect: "follow",
-      headers: API_HEADERS
+  
+  // 2. getApiBase() automatically checks mobiledetects.com if API_EXPIRY_MS (24h) has passed
+  return getApiBase().then(function(apiBase) {
+    console.log(PLUGIN_TAG + " Requesting TV Token (1-Step OTP)...");
+    return fetch(apiBase + "/newtv/otp.php", {
+      method: "GET",
+      headers: Object.assign({}, API_HEADERS, { "otp": "111111" })
     }).then(function(res) {
-      var raw = res.headers.get("set-cookie") || "";
-      var cs = Array.isArray(raw) ? raw.join("; ") : raw;
-      var m = cs.match(/t_hash_t=([^;,\s]+)/);
-      var ext = m ? m[1] : null;
-      return res.text().then(function(body) {
-        if (!body.includes('"r":"n"'))
-          return attempt(n + 1);
-        if (!ext)
-          throw new Error("t_hash_t missing in Set-Cookie");
-        _cachedCookie = ext;
-        _cookieTimestamp = Date.now();
-        console.log(PLUGIN_TAG + " Auth OK");
-        return _cachedCookie;
-      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    }).then(function(data) {
+      if (data.status === "ok" && data.usertoken) {
+        _cachedToken = data.usertoken;
+        _tokenTimestamp = Date.now();
+        console.log(PLUGIN_TAG + " TV Token Acquired");
+        return _cachedToken;
+      }
+      throw new Error("Token extraction failed");
+    }).catch(function(err) {
+      // 3. Triggered if API changed, domain died, or OTP logic was patched
+      resetAuthCache();
+      throw err; 
     });
-  }
-  return attempt(0);
+  });
 }
 function seqRatio(a, b) {
   if (!a || !b)
@@ -354,12 +370,11 @@ function resolveIds(rawId, type) {
     return { title: resolvedTitle || title, year, isTv, imdbId, searchQueue };
   });
 }
-function searchPlatform(searchQueue, year, platform, cookie, isTv) {
+function searchPlatform(searchQueue, year, platform, usertoken, isTv) {
   var ott = PLATFORM_OTT[platform];
-  var jar = makeCookieString({ t_hash_t: cookie, ott, hd: "on", lang: PREFERRED_AUDIO_LANG });
-  var hdrs = Object.assign({}, API_HEADERS, { Cookie: jar });
+  var hdrs = Object.assign({}, API_HEADERS, { "ott": ott, "usertoken": usertoken });
   return Promise.all(searchQueue.map(function(q) {
-    var url = NM_BASE + MOBILE_PATH[platform] + "/search.php?s=" + encodeURIComponent(q) + "&t=" + unixNow();
+    var url = _dynamicApiBase + "/newtv/search.php?s=" + encodeURIComponent(q);
     return request(url, { headers: hdrs }).then(function(res) {
       return res.json();
     }).then(function(data) {
@@ -445,11 +460,11 @@ function formatLangs(langs) {
     return null;
   return langs.slice(0, 5).join(" - ") + (langs.length > 5 ? " +" + (langs.length - 5) + " more" : "");
 }
-function loadContent(contentId, platform, cookie) {
+function loadContent(contentId, platform, usertoken) {
   var ott = PLATFORM_OTT[platform];
-  var jar = makeCookieString({ t_hash_t: cookie, ott, hd: "on", lang: PREFERRED_AUDIO_LANG });
-  var hdrs = Object.assign({}, API_HEADERS, { Cookie: jar });
-  var url = NM_BASE + MOBILE_PATH[platform] + "/post.php?id=" + contentId + "&t=" + unixNow();
+  var hdrs = Object.assign({}, API_HEADERS, { "ott": ott, "usertoken": usertoken });
+  var url = _dynamicApiBase + "/newtv/post.php?id=" + contentId;
+  
   return request(url, { headers: hdrs }).then(function(res) {
     return res.json();
   }).then(function(data) {
@@ -466,24 +481,29 @@ function loadContent(contentId, platform, cookie) {
     };
   });
 }
-function fetchMoreEpisodes(contentId, seasonId, platform, cookie, startPage) {
-  var ott = PLATFORM_OTT[platform];
-  var jar = makeCookieString({ t_hash_t: cookie, ott, hd: "on", lang: PREFERRED_AUDIO_LANG });
-  var hdrs = Object.assign({}, API_HEADERS, { Cookie: jar });
+function fetchMoreEpisodes(contentId, seasonId, platform, usertoken, startPage) {
   var collected = [];
   function page(n) {
-    var url = NM_BASE + MOBILE_PATH[platform] + "/episodes.php?s=" + seasonId + "&series=" + contentId + "&t=" + unixNow() + "&page=" + n;
+    var ott = PLATFORM_OTT[platform];
+    var hdrs = Object.assign({}, API_HEADERS, { "ott": ott, "usertoken": usertoken });
+    var url = _dynamicApiBase + "/newtv/episodes.php?s=" + seasonId + "&series=" + contentId + "&page=" + n;
+    
     return request(url, { headers: hdrs }).then(function(res) {
       return res.json();
     }).then(function(data) {
-      if (data.episodes)
+      if (data.episodes) {
         collected = collected.concat(data.episodes.filter(Boolean));
-      return data.nextPageShow === 0 ? collected : page(n + 1);
+      }
+      // Infinite loop protection: Limit to 10 pages maximum per season
+      if (data.nextPageShow === 1 && n < 10) {
+        return page(n + 1);
+      }
+      return collected;
     }).catch(function() {
       return collected;
     });
   }
-  return page(startPage || 2);
+  return page(startPage || 1);
 }
 function findEpisode(episodes, targetSeason, targetEpisode) {
   var s = parseInt(targetSeason), e = parseInt(targetEpisode);
@@ -492,8 +512,11 @@ function findEpisode(episodes, targetSeason, targetEpisode) {
       return false;
     var epS, epE;
     if (ep.s && ep.ep) {
-      epS = parseInt((ep.s + "").replace(/\D/g, ""));
-      epE = parseInt((ep.ep + "").replace(/\D/g, ""));
+      // Extract only the first set of digits to avoid merging season/episode numbers
+      var sMatch = (ep.s + "").match(/\d+/);
+      var eMatch = (ep.ep + "").match(/\d+/);
+      epS = sMatch ? parseInt(sMatch[0]) : -1;
+      epE = eMatch ? parseInt(eMatch[0]) : -1;
     } else if (ep.season !== void 0 && ep.episode !== void 0) {
       epS = parseInt(ep.season);
       epE = parseInt(ep.episode);
@@ -505,58 +528,27 @@ function findEpisode(episodes, targetSeason, targetEpisode) {
     return epS === s && epE === e;
   }) || null;
 }
-function getPlaylist(contentId, title, platform, cookie) {
+function getPlaylist(contentId, title, platform, usertoken) {
   var ott = PLATFORM_OTT[platform];
-  var jar = makeCookieString({ t_hash_t: cookie, ott, hd: "on", lang: PREFERRED_AUDIO_LANG });
-  var qs = "?id=" + contentId;
-  if (platform === "disney") {
-    qs += "&t=";
-  } else {
-    qs += "&t=" + encodeURIComponent(title || "");
-  }
-  qs += "&tm=" + unixNow();
-  if (platform === "primevideo") {
-    qs += "&lang=" + PREFERRED_AUDIO_LANG + "&hd=on&userhash=" + encodeURIComponent(cookie);
-  }
-  var originalUrl = NM_BASE + MOBILE_PATH[platform] + "/playlist.php" + qs;
-  var proxiedUrl = PROXY_WORKER_URL + "/proxy?url=" + encodeURIComponent(originalUrl);
-  console.log(PLUGIN_TAG + " [playlist] " + proxiedUrl);
-  return fetch(proxiedUrl, {
-    headers: Object.assign({}, APP_HEADERS, { "X-NM-Cookie": jar })
-  }).then(function(res) {
-    if (!res.ok)
-      throw new Error("playlist HTTP " + res.status);
-    return res.json();
-  }).then(function(playlist) {
-    if (!Array.isArray(playlist) || !playlist.length)
-      return { sources: [], subtitles: [] };
-    var sources = [], subtitles = [];
-    playlist.forEach(function(item) {
-      (item.sources || []).forEach(function(src) {
-        var u = src.file || "";
-        if (!u)
-          return;
-        if (u.startsWith("//"))
-          u = "https:" + u;
-        else if (u.startsWith("/"))
-          u = NM_BASE + u;
-        sources.push({ url: u, label: src.label || "", type: src.type || "application/x-mpegURL", isDefault: src.default === "true" });
-      });
-      (item.tracks || []).filter(function(t) {
-        return t.kind === "captions";
-      }).forEach(function(t) {
-        var s = t.file || "";
-        if (s.startsWith("//"))
-          s = "https:" + s;
-        else if (s.startsWith("/"))
-          s = NM_BASE + s;
-        if (s)
-          subtitles.push({ url: s, language: t.label || "Unknown" });
-      });
+  var originalUrl = _dynamicApiBase + "/newtv/player.php?id=" + contentId;
+  var hdrs = Object.assign({}, API_HEADERS, { "ott": ott, "usertoken": usertoken });
+
+  return fetch(originalUrl, { headers: hdrs })
+    .then(function(res) {
+      if (!res.ok) throw new Error("player HTTP " + res.status);
+      return res.json();
+    }).then(function(data) {
+      var sources = [], subtitles = [];
+      if (data.status === "ok" && data.video_link) {
+        sources.push({ 
+          url: data.video_link.replace(/\\\//g, '/'), 
+          label: "Auto", 
+          type: "application/x-mpegURL", 
+          isDefault: true 
+        });
+      }
+      return { sources, subtitles };
     });
-    console.log(PLUGIN_TAG + " [playlist] " + sources.length + " src / " + subtitles.length + " subs");
-    return { sources, subtitles };
-  });
 }
 function pickQuality(label) {
   var l = (label || "").toLowerCase();
@@ -588,16 +580,17 @@ function buildStreamLine(platform, content, resolved, episodeData) {
     lines.push(langs);
   return lines.join("\n");
 }
+
 function makeStream(platform, qualityName, finalUrl, titleLine) {
   var playerUrl = buildPlayerUrl(finalUrl);
   var streamHeaders = ENABLE_PROXY ? {} : {
     "User-Agent": APP_UA,
-    "Origin": NM_BASE,
-    "Referer": NM_BASE + "/",
+    "Origin": "https://net52.cc",
+    "Referer": "https://net52.cc/",
     "Accept": "*/*",
     "Accept-Encoding": "identity",
     "Connection": "keep-alive",
-    "X-Requested-With": "app.netmirror.netmirrornew"
+    "X-Requested-With": "NetmirrorNewTV v1.0"
   };
   console.log(PLUGIN_TAG + " [stream] " + (ENABLE_PROXY ? "[PROXIED] " : "[DIRECT] ") + qualityName + " \u2192 " + playerUrl.slice(0, 80) + "\u2026");
   return {
@@ -611,25 +604,44 @@ function makeStream(platform, qualityName, finalUrl, titleLine) {
 }
 function loadPlatformContent(platform, hit, resolved, season, episode, cookie) {
   console.log(PLUGIN_TAG + " >> Pipeline: " + PLATFORM_LABEL[platform]);
+  
+  // 'cookie' is the usertoken passed from _getStreamsCore
   return loadContent(hit.id, platform, cookie).then(function(content) {
     var raw = content.raw;
     var chain = Promise.resolve();
-    if (raw.nextPageShow === 1 && raw.nextPageSeason) {
-      chain = chain.then(function() {
-        return fetchMoreEpisodes(hit.id, raw.nextPageSeason, platform, cookie, 2).then(function(more) {
-          content.episodes = content.episodes.concat(more);
-        });
-      });
-    }
-    if (Array.isArray(raw.season) && raw.season.length > 1) {
-      raw.season.slice(0, -1).forEach(function(s) {
+
+    // OPTIMIZATION: Only fetch additional episodes if we are looking for a TV show.
+    // This prevents movies from getting stuck in long episode-fetching loops.
+    if (resolved.isTv) {
+      if (raw.nextPageShow === 1 && raw.nextPageSeason) {
         chain = chain.then(function() {
-          return fetchMoreEpisodes(hit.id, s.id, platform, cookie, 1).then(function(more) {
+          return fetchMoreEpisodes(hit.id, raw.nextPageSeason, platform, cookie, 2).then(function(more) {
             content.episodes = content.episodes.concat(more);
           });
         });
-      });
+      }
+      
+      // Optimization: Only fetch the season we actually need to save requests/time
+      if (Array.isArray(raw.season) && raw.season.length > 1) {
+        var targetSeasonId = null;
+        var sNum = parseInt(season) || 1;
+        raw.season.forEach(function(s) {
+          // Extract only the FIRST set of digits (e.g., "Season 4 (10 EP)" -> "4")
+          var match = (s.s || "").match(/\d+/);
+          var epS = match ? parseInt(match[0]) : -1;
+          if (epS === sNum) targetSeasonId = s.id;
+        });
+
+        if (targetSeasonId && targetSeasonId !== raw.nextPageSeason) {
+          chain = chain.then(function() {
+            return fetchMoreEpisodes(hit.id, targetSeasonId, platform, cookie, 1).then(function(more) {
+              content.episodes = content.episodes.concat(more);
+            });
+          });
+        }
+      }
     }
+
     return chain.then(function() {
       var targetId = hit.id, episodeObj = null;
       if (resolved.isTv) {
@@ -641,27 +653,30 @@ function loadPlatformContent(platform, hit, resolved, season, episode, cookie) {
         targetId = episodeObj.id;
         console.log(PLUGIN_TAG + " Episode ID: " + targetId);
       }
+      
+      // Pass the token ('cookie') to getPlaylist
       return getPlaylist(targetId, content.title || resolved.title, platform, cookie).then(function(playlist) {
-        if (!playlist.sources.length)
-          return null;
+        if (!playlist.sources.length) return null;
+        
         var keep = playlist.sources.filter(function(s) {
           var lab = (s.label || "").toLowerCase();
-          if (lab === "auto")
-            return false;
-          if (lab.includes("low") || lab.includes("480"))
-            return false;
+          // The TV API returns "Auto" as a valid master playlist. Do not filter it out.
+          if (lab.includes("low") || lab.includes("480")) return false;
           return true;
         });
+        
         if (!keep.length) {
           console.log(PLUGIN_TAG + " No HD sources after filter");
           return null;
         }
+        
         var titleLine = buildStreamLine(platform, content, resolved, episodeObj);
         return keep.map(function(src) {
           var q = pickQuality(src.label).name;
           return makeStream(platform, q, src.url, titleLine);
         }).sort(function(a, b) {
-          return parseInt(b.name.match(/(\d+)p/) ? b.name.match(/(\d+)p/)[1] : 0) - parseInt(a.name.match(/(\d+)p/) ? a.name.match(/(\d+)p/)[1] : 0);
+          var getQ = function(n) { return parseInt(n.match(/(\d+)p/) ? n.match(/(\d+)p/)[1] : 0); };
+          return getQ(b.name) - getQ(a.name);
         });
       });
     });
